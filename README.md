@@ -41,6 +41,11 @@ and a distraction-free "simple text" reading mode.
   drops down grouping matches into **Titles**, **Authors**, and **Series**
   (e.g. typing "herbert" shows "Frank Herbert (3 books)" under Authors).
   Click any suggestion to jump straight to all matching books.
+- **Hover highlight** — hovering a book (its row in Simple Text view, or its
+  cover in Image Preview) shows a light blue tint and outline around it.
+- **Favorites get a corner star** — a gold star badge appears in the
+  bottom-right corner of a favorited book's cover in Image Preview, so
+  favorites are visible at a glance without opening anything.
 - **Reading status** — opening a book automatically marks it "Reading"; mark
   it "Finished" from the reader toolbar or the details panel. Both statuses
   render the same way: a colored banner across the top of the cover in Image
@@ -62,9 +67,11 @@ and a distraction-free "simple text" reading mode.
   without you doing anything. Click A+ / A- at any time to take manual
   control of the zoom instead; click "Fit to Screen" again to go back to
   automatic.
-- **Dark / light mode** — applies to the whole app; in dark mode, rendered
-  pages are also color-inverted so you get a proper "night mode" instead of a
-  bright white page on a dark UI.
+- **Dark Mode and Dark Pages are independent** — "Dark Mode" is the app's own
+  theme (toolbars, menus, text mode). A separate "Dark Pages" toggle inverts
+  the colors of the rendered page for a proper night-reading mode. Mix and
+  match: dark app with normal pages, light app with inverted (dark) pages,
+  both, or neither — whatever's comfortable.
 - **Simple text mode** — strips away the page layout and shows just the
   extracted text of the page, reflowed to your chosen font size — good for
   text-heavy books, bad for pages that are mostly images/diagrams.
@@ -113,7 +120,7 @@ deletes the underlying PDF file.
 
 | Shortcut       | Action                        |
 |----------------|--------------------------------|
-| ← / →          | Previous / next page          |
+| ← / →          | Previous / next page (also works via mouse scroll, and Ctrl+scroll zooms) |
 | Ctrl + =       | Increase text size / zoom in  |
 | Ctrl + -       | Decrease text size / zoom out |
 | Ctrl + D       | Add a bookmark on this page   |

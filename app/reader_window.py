@@ -55,6 +55,7 @@ class ReaderWindow(QMainWindow):
         self.font_size = int(db.get_setting("reader_font_size", 15))
         self.simple_text_mode = db.get_setting("reader_text_mode", "normal") == "simple"
         self.dark_mode = db.get_setting("theme", "light") == "dark"
+        self.dark_pages = db.get_setting("reader_dark_pages", "0") == "1"
 
         self.setWindowTitle(self.book["title"])
         self.resize(920, 800)
@@ -83,6 +84,7 @@ class ReaderWindow(QMainWindow):
         self.page_spin.setMinimum(1)
         self.page_spin.setMaximum(self.page_count)
         self.page_spin.setValue(self.current_page + 1)
+        self.page_spin.setFocusPolicy(Qt.ClickFocus)  # don't let it grab arrow keys by default
         self.page_spin.valueChanged.connect(self.jump_to_page)
         toolbar.addWidget(self.page_spin)
 
@@ -126,10 +128,20 @@ class ReaderWindow(QMainWindow):
         toolbar.addWidget(self.simple_btn)
 
         self.dark_btn = QPushButton("Dark Mode")
+        self.dark_btn.setToolTip("Light/dark app theme (toolbars, menus, text mode)")
         self.dark_btn.setCheckable(True)
         self.dark_btn.setChecked(self.dark_mode)
         self.dark_btn.clicked.connect(self.toggle_dark_mode)
         toolbar.addWidget(self.dark_btn)
+
+        self.dark_pages_btn = QPushButton("Dark Pages")
+        self.dark_pages_btn.setToolTip(
+            "Invert rendered page colors (dark file), independent of the app theme"
+        )
+        self.dark_pages_btn.setCheckable(True)
+        self.dark_pages_btn.setChecked(self.dark_pages)
+        self.dark_pages_btn.clicked.connect(self.toggle_dark_pages)
+        toolbar.addWidget(self.dark_pages_btn)
 
         toolbar.addSeparator()
 
@@ -229,7 +241,7 @@ class ReaderWindow(QMainWindow):
             zoom = self._compute_fit_zoom(page) if self.auto_fit else self.zoom
             matrix = fitz.Matrix(zoom, zoom)
             pix = page.get_pixmap(matrix=matrix)
-            if self.dark_mode:
+            if self.dark_pages:
                 pix.invert_irect(pix.irect)
             fmt = QImage.Format_RGB888 if pix.n < 4 else QImage.Format_RGBA8888
             image = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt)
@@ -241,6 +253,20 @@ class ReaderWindow(QMainWindow):
         self.db.update_progress(self.book_id, self.current_page)
 
     # ------------- Navigation -------------
+    def keyPressEvent(self, event):
+        # Belt-and-suspenders alongside the Prev/Next QAction shortcuts: guarantees
+        # Left/Right always turn pages even if some focused child widget would
+        # otherwise swallow the key first. Up/Down are intentionally left alone.
+        if event.key() == Qt.Key_Left:
+            self.prev_page()
+            event.accept()
+            return
+        if event.key() == Qt.Key_Right:
+            self.next_page()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Wheel and obj in (
             self.scroll_area.viewport(),
@@ -351,6 +377,11 @@ class ReaderWindow(QMainWindow):
         theme = "dark" if checked else "light"
         self.db.set_setting("theme", theme)
         QApplication.instance().setStyleSheet(DARK_THEME if checked else LIGHT_THEME)
+
+    def toggle_dark_pages(self, checked):
+        self.dark_pages_btn.setChecked(checked)
+        self.dark_pages = checked
+        self.db.set_setting("reader_dark_pages", "1" if checked else "0")
         self.render_page()
 
     def toggle_favorite(self):

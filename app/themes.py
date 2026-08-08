@@ -41,6 +41,14 @@ QLabel#pageLabel { background-color: #ffffff; }
 QDockWidget { color: #202020; }
 QDockWidget::title { background: #e8e8e8; padding: 4px; }
 QStatusBar { background-color: #e8e8e8; }
+BookCard, CoverCell {
+    border: 1px solid transparent;
+    border-radius: 6px;
+}
+BookCard:hover, CoverCell:hover {
+    background-color: rgba(70, 130, 255, 35);
+    border: 1px solid rgba(70, 130, 255, 110);
+}
 """
 
 DARK_THEME = """
@@ -86,4 +94,12 @@ QLabel#pageLabel { background-color: #1a1a1a; }
 QDockWidget { color: #e0e0e0; }
 QDockWidget::title { background: #2a2a2a; padding: 4px; }
 QStatusBar { background-color: #2a2a2a; }
+BookCard, CoverCell {
+    border: 1px solid transparent;
+    border-radius: 6px;
+}
+BookCard:hover, CoverCell:hover {
+    background-color: rgba(90, 150, 255, 45);
+    border: 1px solid rgba(90, 150, 255, 130);
+}
 """

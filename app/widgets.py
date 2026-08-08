@@ -33,6 +33,8 @@ class BookCard(QWidget):
     def __init__(self, book: dict, parent=None):
         super().__init__(parent)
         self.book_id = book["id"]
+        self.setObjectName("BookCard")
+        self.setAttribute(Qt.WA_StyledBackground, True)  # let stylesheet hover/background paint
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
@@ -126,6 +128,8 @@ class CoverCell(QWidget):
     def __init__(self, book: dict, pixmap, parent=None):
         super().__init__(parent)
         self.book_id = book["id"]
+        self.setObjectName("CoverCell")
+        self.setAttribute(Qt.WA_StyledBackground, True)  # let stylesheet hover/background paint
         self.setFixedWidth(self.CELL_WIDTH)
         self.setCursor(Qt.PointingHandCursor)
         self.setContextMenuPolicy(Qt.CustomContextMenu)

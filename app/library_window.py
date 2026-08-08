@@ -374,7 +374,7 @@ class LibraryWindow(QMainWindow):
         flow = FlowLayout(group_widget, margin=0, hspacing=14, vspacing=14)
         for book in books:
             pixmap = ensure_thumbnail(book["id"], book["filepath"])
-            pixmap = decorate_thumbnail(pixmap, book.get("status") or "unread")
+            pixmap = decorate_thumbnail(pixmap, book.get("status") or "unread", bool(book.get("is_favorite")))
             cell = CoverCell(book, pixmap)
             cell.open_requested.connect(self.open_book)
             cell.details_requested.connect(self.open_book_details)
