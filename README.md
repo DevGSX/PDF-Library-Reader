@@ -29,6 +29,18 @@ and a distraction-free "simple text" reading mode.
   Annotation, and set its reading status. Saving updates the library
   immediately. Kept off a plain click on purpose, so browsing your library
   doesn't keep popping the panel open.
+- **Filename stays in sync with Title / Author / Series** — saving details
+  renames the actual file on disk to `Title * Author * Series.pdf` (empty
+  parts are just dropped, e.g. `Title.pdf` if there's no author or series
+  yet). That way the metadata travels with the file itself — copy your
+  library folder to another device and the titles/authors/series are right
+  there in the filenames, no re-entering anything by hand. Illegal filename
+  characters are stripped automatically, and a name that would collide with
+  an existing file gets a "(2)" appended instead of overwriting it.
+- **Search suggestions** — start typing in the filter box and a preview
+  drops down grouping matches into **Titles**, **Authors**, and **Series**
+  (e.g. typing "herbert" shows "Frank Herbert (3 books)" under Authors).
+  Click any suggestion to jump straight to all matching books.
 - **Reading status** — opening a book automatically marks it "Reading"; mark
   it "Finished" from the reader toolbar or the details panel. Both statuses
   render the same way: a colored banner across the top of the cover in Image
@@ -116,7 +128,11 @@ to open the panel. From there you can:
 - Toggle **Favorite**
 - Jump straight into **Open Book**
 
-Changes only take effect once you click **Save**.
+Changes only take effect once you click **Save**. Saving also renames the
+file on disk to match Title/Author/Series (see above) — if that rename
+fails for some reason (e.g. the file was moved externally), your details
+are still saved and you'll get a warning explaining the file itself
+couldn't be renamed.
 
 ## Notes / limitations
 

@@ -11,11 +11,13 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
 )
 
+from .file_naming import sync_filename
 from .thumbnails import ensure_thumbnail
 from .widgets import human_size
 
@@ -47,6 +49,12 @@ class BookDetailsDialog(QDialog):
         self.meta_label.setStyleSheet("color: #888;")
         layout.addWidget(self.meta_label)
 
+        self.filename_label = QLabel()
+        self.filename_label.setAlignment(Qt.AlignCenter)
+        self.filename_label.setWordWrap(True)
+        self.filename_label.setStyleSheet("color: #999; font-size: 11px;")
+        layout.addWidget(self.filename_label)
+
         form = QFormLayout()
         self.title_edit = QLineEdit()
         self.author_edit = QLineEdit()
@@ -67,6 +75,14 @@ class BookDetailsDialog(QDialog):
         form.addRow("Status", self.status_combo)
         form.addRow("Annotation", self.annotation_edit)
         layout.addLayout(form)
+
+        hint = QLabel(
+            "Saving renames the file to \u201cTitle * Author * Series.pdf\u201d, so the "
+            "info travels with it if you move or copy it to another device."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #999; font-size: 11px;")
+        layout.addWidget(hint)
 
         btn_row = QHBoxLayout()
         self.favorite_btn = QPushButton("\u2606 Favorite")
@@ -111,6 +127,7 @@ class BookDetailsDialog(QDialog):
         if book["page_count"]:
             meta_bits.append(f"{book['page_count']} pages")
         self.meta_label.setText(" \u00b7 ".join(meta_bits))
+        self.filename_label.setText(f"File: {os.path.basename(book['filepath'])}")
 
         self.title_edit.setText(book["title"] or "")
         self.author_edit.setText(book["author"] or "")
@@ -145,6 +162,18 @@ class BookDetailsDialog(QDialog):
             annotation=self.annotation_edit.toPlainText().strip(),
         )
         self.db.set_status(self.book_id, self.status_combo.currentData())
+
+        _renamed, info = sync_filename(self.db, self.book_id)
+        if info and not _renamed:
+            # sync_filename returns (False, error_message) only when a rename
+            # was needed but failed; (False, None) means nothing needed renaming.
+            QMessageBox.warning(
+                self,
+                "Couldn't rename file",
+                f"Your changes were saved, but the file on disk couldn't be renamed "
+                f"to match:\n{info}",
+            )
+
         self.book_updated.emit()
         self.close()
 

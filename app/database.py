@@ -97,8 +97,8 @@ class Database:
             clauses.append("status = ?")
             params.append(status)
         if search:
-            clauses.append("title LIKE ?")
-            params.append(f"%{search}%")
+            clauses.append("(title LIKE ? OR author LIKE ? OR series LIKE ?)")
+            params.extend([f"%{search}%"] * 3)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         cur = self.conn.execute(query, params)
@@ -152,6 +152,44 @@ class Database:
         params.append(book_id)
         self.conn.execute(f"UPDATE books SET {', '.join(fields)} WHERE id = ?", params)
         self.conn.commit()
+
+    def update_filepath(self, book_id, new_filepath):
+        self.conn.execute("UPDATE books SET filepath = ? WHERE id = ?", (new_filepath, book_id))
+        self.conn.commit()
+
+    def search_suggestions(self, query, limit=5):
+        """Categorized quick-search results for the live preview dropdown:
+        matching titles, plus distinct matching authors/series with book counts."""
+        empty = {"titles": [], "authors": [], "series": []}
+        query = (query or "").strip()
+        if not query:
+            return empty
+        like = f"%{query}%"
+
+        cur = self.conn.execute(
+            "SELECT id, title FROM books WHERE title LIKE ? "
+            "ORDER BY title COLLATE NOCASE LIMIT ?",
+            (like, limit),
+        )
+        titles = [dict(r) for r in cur.fetchall()]
+
+        cur = self.conn.execute(
+            "SELECT author AS name, COUNT(*) AS count FROM books "
+            "WHERE author IS NOT NULL AND author != '' AND author LIKE ? "
+            "GROUP BY author COLLATE NOCASE ORDER BY author COLLATE NOCASE LIMIT ?",
+            (like, limit),
+        )
+        authors = [dict(r) for r in cur.fetchall()]
+
+        cur = self.conn.execute(
+            "SELECT series AS name, COUNT(*) AS count FROM books "
+            "WHERE series IS NOT NULL AND series != '' AND series LIKE ? "
+            "GROUP BY series COLLATE NOCASE ORDER BY series COLLATE NOCASE LIMIT ?",
+            (like, limit),
+        )
+        series = [dict(r) for r in cur.fetchall()]
+
+        return {"titles": titles, "authors": authors, "series": series}
 
     def set_status(self, book_id, status):
         if status not in ("unread", "reading", "finished"):

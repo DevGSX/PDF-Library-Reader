@@ -1,7 +1,7 @@
 """Reader window: renders PDF pages, and supports simple-text mode, bookmarks,
 text size / zoom, dark mode and favoriting a book while reading it."""
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -172,6 +172,10 @@ class ReaderWindow(QMainWindow):
         self.setCentralWidget(container)
         self._update_mode_visibility()
 
+        # Ctrl+scroll to zoom, plain scroll to turn pages (see eventFilter / _handle_wheel).
+        self.scroll_area.viewport().installEventFilter(self)
+        self.text_browser.viewport().installEventFilter(self)
+
     def _build_bookmarks_dock(self):
         dock = QDockWidget("Bookmarks", self)
         dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
@@ -237,6 +241,48 @@ class ReaderWindow(QMainWindow):
         self.db.update_progress(self.book_id, self.current_page)
 
     # ------------- Navigation -------------
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel and obj in (
+            self.scroll_area.viewport(),
+            self.text_browser.viewport(),
+        ):
+            return self._handle_wheel(event)
+        return super().eventFilter(obj, event)
+
+    def _handle_wheel(self, event):
+        """Ctrl+scroll zooms (or resizes text); plain scroll pans a zoomed-in
+        page as usual, but turns the page once you scroll past the top/bottom
+        edge -- and turns it immediately when the whole page already fits."""
+        if self.doc is None:
+            return False
+
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.increase_text_size()
+            elif delta < 0:
+                self.decrease_text_size()
+            return True
+
+        delta_y = event.angleDelta().y()
+        if delta_y == 0:
+            return False
+
+        vbar = self.text_browser.verticalScrollBar() if self.simple_text_mode else self.scroll_area.verticalScrollBar()
+        at_top = vbar.value() <= vbar.minimum()
+        at_bottom = vbar.value() >= vbar.maximum()
+
+        if delta_y > 0 and not at_top:
+            return False  # room to scroll up within the page -- let it scroll normally
+        if delta_y < 0 and not at_bottom:
+            return False  # room to scroll down within the page -- let it scroll normally
+
+        if delta_y > 0:
+            self.prev_page()
+        else:
+            self.next_page()
+        return True
+
     def prev_page(self):
         if self.current_page > 0:
             self.current_page -= 1

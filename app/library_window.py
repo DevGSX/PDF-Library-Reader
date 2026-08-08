@@ -137,8 +137,11 @@ class LibraryWindow(QMainWindow):
 
         controls = QHBoxLayout()
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("Filter by title... (use \u201cSearch Text\u201d to search inside books)")
+        self.search_box.setPlaceholderText(
+            "Filter by title, author, or series... (use \u201cSearch Text\u201d to search inside books)"
+        )
         self.search_box.textChanged.connect(self.refresh_list)
+        self.search_box.textChanged.connect(self._update_search_suggestions)
         controls.addWidget(self.search_box, stretch=1)
 
         controls.addWidget(QLabel("Status:"))
@@ -162,6 +165,18 @@ class LibraryWindow(QMainWindow):
         self.sort_combo.currentIndexChanged.connect(self.refresh_list)
         controls.addWidget(self.sort_combo)
         layout.addLayout(controls)
+
+        # Live categorized preview (Titles / Authors / Series) shown while typing
+        # in the filter box; hidden whenever there's no text or no matches.
+        self.suggestion_panel = QWidget()
+        self.suggestion_layout = QVBoxLayout(self.suggestion_panel)
+        self.suggestion_layout.setContentsMargins(6, 4, 6, 4)
+        self.suggestion_layout.setSpacing(1)
+        self.suggestion_panel.setStyleSheet(
+            "background-color: rgba(127, 127, 127, 30); border: 1px solid #ccc; border-radius: 4px;"
+        )
+        layout.addWidget(self.suggestion_panel)
+        self.suggestion_panel.hide()
 
         # "Simple Text" view: a detailed list of BookCard rows.
         self.list_widget = QListWidget()
@@ -259,6 +274,61 @@ class LibraryWindow(QMainWindow):
             self._render_grid(books, sort_by)
         else:
             self._render_list(books)
+
+    # ------------- Search suggestions preview -------------
+    def _update_search_suggestions(self, text):
+        text = text.strip()
+        self._clear_suggestion_layout()
+        if not text:
+            self.suggestion_panel.hide()
+            return
+
+        results = self.db.search_suggestions(text, limit=5)
+        if not (results["titles"] or results["authors"] or results["series"]):
+            self.suggestion_panel.hide()
+            return
+
+        if results["titles"]:
+            self._add_suggestion_header("Titles")
+            for row in results["titles"]:
+                self._add_suggestion_row(row["title"], row["title"])
+        if results["authors"]:
+            self._add_suggestion_header("Authors")
+            for row in results["authors"]:
+                label = f"{row['name']} ({row['count']} book{'s' if row['count'] != 1 else ''})"
+                self._add_suggestion_row(label, row["name"])
+        if results["series"]:
+            self._add_suggestion_header("Series")
+            for row in results["series"]:
+                label = f"{row['name']} ({row['count']} book{'s' if row['count'] != 1 else ''})"
+                self._add_suggestion_row(label, row["name"])
+
+        self.suggestion_panel.show()
+
+    def _clear_suggestion_layout(self):
+        while self.suggestion_layout.count():
+            item = self.suggestion_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.hide()  # deleteLater() is deferred; hide it now so it can't linger visually
+                w.deleteLater()
+
+    def _add_suggestion_header(self, text):
+        label = QLabel(text)
+        label.setStyleSheet("font-weight: bold; color: #888; font-size: 11px; padding-top: 4px;")
+        self.suggestion_layout.addWidget(label)
+
+    def _add_suggestion_row(self, label_text, filter_value):
+        btn = QPushButton(label_text)
+        btn.setFlat(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet("text-align: left; padding: 2px 8px; border: none;")
+        btn.clicked.connect(lambda: self._apply_suggestion(filter_value))
+        self.suggestion_layout.addWidget(btn)
+
+    def _apply_suggestion(self, value):
+        self.search_box.setText(value)  # triggers refresh_list + _update_search_suggestions
+        self.suggestion_panel.hide()    # then collapse the preview -- selection made
 
     # ------------- Simple Text (list) view -------------
     def _render_list(self, books):
