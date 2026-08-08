@@ -62,5 +62,15 @@ def sync_filename(db, book_id):
     except OSError as exc:
         return False, str(exc)
 
-    db.update_filepath(book_id, target_path)
+    try:
+        db.update_filepath(book_id, target_path)
+    except Exception as exc:
+        # The file moved but the database write failed -- try to undo the
+        # rename so the file and the database don't end up out of sync.
+        try:
+            os.rename(target_path, old_path)
+        except OSError:
+            pass  # best effort; if this also fails, the DB still points at old_path
+        return False, f"Renamed the file but couldn't update the library database: {exc}"
+
     return True, target_path

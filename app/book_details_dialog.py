@@ -153,18 +153,26 @@ class BookDetailsDialog(QDialog):
     def _save(self):
         if self.book_id is None:
             return
-        self.db.update_metadata(
-            self.book_id,
-            title=self.title_edit.text().strip() or "Untitled",
-            author=self.author_edit.text().strip(),
-            series=self.series_edit.text().strip(),
-            language=self.language_edit.text().strip(),
-            annotation=self.annotation_edit.toPlainText().strip(),
-        )
-        self.db.set_status(self.book_id, self.status_combo.currentData())
+        try:
+            self.db.update_metadata(
+                self.book_id,
+                title=self.title_edit.text().strip() or "Untitled",
+                author=self.author_edit.text().strip(),
+                series=self.series_edit.text().strip(),
+                language=self.language_edit.text().strip(),
+                annotation=self.annotation_edit.toPlainText().strip(),
+            )
+            self.db.set_status(self.book_id, self.status_combo.currentData())
+            renamed, info = sync_filename(self.db, self.book_id)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Couldn't save changes",
+                f"Something went wrong while saving:\n{exc}",
+            )
+            return  # leave the dialog open so nothing is lost
 
-        _renamed, info = sync_filename(self.db, self.book_id)
-        if info and not _renamed:
+        if info and not renamed:
             # sync_filename returns (False, error_message) only when a rename
             # was needed but failed; (False, None) means nothing needed renaming.
             QMessageBox.warning(
