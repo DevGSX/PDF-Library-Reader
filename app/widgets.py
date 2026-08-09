@@ -32,6 +32,7 @@ class BookCard(QWidget):
     remove_requested = Signal(int)
     details_requested = Signal(int)  # emitted only from the right-click menu
     selection_toggled = Signal(int)  # emitted on a plain click on the row body
+    range_select_requested = Signal(int)  # emitted on a Shift+click on the row body
     context_menu_requested = Signal(int, object)  # book_id, global QPoint
 
     def __init__(self, book: dict, parent=None, selected=False, select_mode=False):
@@ -114,7 +115,10 @@ class BookCard(QWidget):
 
     def mousePressEvent(self, event):
         if self.select_mode and event.button() == Qt.LeftButton:
-            self.selection_toggled.emit(self.book_id)
+            if event.modifiers() & Qt.ShiftModifier:
+                self.range_select_requested.emit(self.book_id)
+            else:
+                self.selection_toggled.emit(self.book_id)
         super().mousePressEvent(event)
 
     def set_selected(self, selected):
@@ -136,6 +140,7 @@ class CoverCell(QWidget):
     favorite_toggled = Signal(int)
     remove_requested = Signal(int)
     selection_toggled = Signal(int)  # emitted on a plain click
+    range_select_requested = Signal(int)  # emitted on a Shift+click
     context_menu_requested = Signal(int, object)  # book_id, global QPoint
 
     CELL_WIDTH = 150
@@ -192,7 +197,10 @@ class CoverCell(QWidget):
 
     def mousePressEvent(self, event):
         if self.select_mode and event.button() == Qt.LeftButton:
-            self.selection_toggled.emit(self.book_id)
+            if event.modifiers() & Qt.ShiftModifier:
+                self.range_select_requested.emit(self.book_id)
+            else:
+                self.selection_toggled.emit(self.book_id)
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):

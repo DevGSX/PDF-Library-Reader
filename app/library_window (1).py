@@ -313,17 +313,6 @@ class LibraryWindow(QMainWindow):
                         self.clear_selection()
         return super().eventFilter(obj, event)
 
-    def keyPressEvent(self, event):
-        # Belt-and-suspenders alongside the Ctrl+A QShortcut: some focused
-        # child widgets (e.g. the list/grid viewport after a click) can
-        # intercept the key before a window-level shortcut ever sees it, so
-        # this guarantees Ctrl+A always works regardless of what has focus.
-        if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
-            self._select_all_visible()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
     def _build_alpha_bar(self):
         """A horizontal, wrapping row of A-Z (+#) buttons that jump to that
         letter's section in the grid. Returns (widget, {letter: button})."""

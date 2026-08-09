@@ -72,12 +72,15 @@ and a distraction-free "simple text" reading mode.
   to any letter. Letters with matching books are clickable; letters with
   nothing yet are grayed out. The bar only appears while sorted
   alphabetically.
-- **Pagination** — for the non-alphabetical sorts (Recently Read, Oldest
-  Read, File Size Largest/Smallest), a "Per page" dropdown next to the sort
-  box lets you split the list into pages of 10/25/50/100 instead of showing
-  everything at once, with Previous/Next navigation at the bottom. Defaults
-  to "All" (today's behavior); not available for Title sort, which uses the
-  A-Z index instead. The page resets to 1 whenever you change the search,
+- **Pagination** — a "Per page" dropdown next to the sort box lets you split
+  the list into pages of 10/25/50/100 instead of showing everything at once,
+  with Previous/Next navigation at the bottom — works for every sort mode,
+  including Title, which is worth turning on for large libraries since
+  rendering hundreds of covers at once can get slow and memory-hungry. Under
+  Title sort, the A-Z bar still shows every letter with a match across your
+  whole library, not just the current page — click one that's on a different
+  page and it jumps you straight there automatically. Defaults to "All"
+  (today's behavior). The page resets to 1 whenever you change the search,
   filters, sort, or category, so you never land on an empty page.
 - **Categories** — organize your library into your own custom categories,
   shown in a sidebar on the left with a live book count for each (and a
@@ -88,15 +91,21 @@ and a distraction-free "simple text" reading mode.
   matching book at once, with a **Text** / **Image Preview** toggle so title
   matches can show as cover thumbnails — or right-click a category to
   favorite, rename, or delete it (deleting a category never deletes the
-  books themselves). Turn on **Select** in the toolbar to multi-select books
-  (click to select, click again to deselect, or click empty space to clear
-  the whole selection); with Select off, clicking a book does nothing, so
-  you can browse normally without ever selecting one by accident. While
-  selected, right-click any selected book to add the whole selection to a
-  category, or remove them all from the library at once — works in both
-  Simple Text and Image Preview. The selection automatically clears itself
-  once you've added the books to a category, so it's ready for the next
-  thing without an extra click.
+  books themselves). Turn on **Select** in the toolbar to multi-select
+  books; with Select off, clicking a book does nothing, so you can browse
+  normally without ever selecting one by accident. Once it's on:
+  - **Click** a book to select/deselect it
+  - **Shift+click** another book to select everything between it and the
+    last one you clicked, like most file managers
+  - **Ctrl+A** selects every book currently on screen (just the current
+    page, if you're paginated)
+  - **Click empty space** clears the whole selection
+
+  While selected, right-click any selected book to add the whole selection
+  to a category, or remove them all from the library at once — works in
+  both Simple Text and Image Preview. The selection automatically clears
+  itself once you've added the books to a category, so it's ready for the
+  next thing without an extra click.
 - **Bookmarks** — save a bookmark (with an optional label) on any page inside
   a book, jump back to it later, remove it when you're done. The panel has
   its own "Bookmarks" toggle button next to "+ Bookmark" in the toolbar, so
