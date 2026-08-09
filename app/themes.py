@@ -49,6 +49,10 @@ BookCard:hover, CoverCell:hover {
     background-color: rgba(70, 130, 255, 35);
     border: 1px solid rgba(70, 130, 255, 110);
 }
+BookCard[selected="true"], CoverCell[selected="true"] {
+    background-color: rgba(40, 120, 255, 70);
+    border: 2px solid rgba(20, 90, 220, 220);
+}
 """
 
 DARK_THEME = """
@@ -101,5 +105,9 @@ BookCard, CoverCell {
 BookCard:hover, CoverCell:hover {
     background-color: rgba(90, 150, 255, 45);
     border: 1px solid rgba(90, 150, 255, 130);
+}
+BookCard[selected="true"], CoverCell[selected="true"] {
+    background-color: rgba(60, 140, 255, 90);
+    border: 2px solid rgba(90, 160, 255, 230);
 }
 """

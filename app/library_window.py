@@ -1,19 +1,22 @@
-"""Main library window: browse, search, sort, filter, favorite and open PDF books."""
+"""Main library window: browse, search, sort, filter, favorite, categorize,
+and open PDF books."""
 import os
 from collections import OrderedDict
 
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -22,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .add_to_category_dialog import AddToCategoryDialog
 from .badges import decorate_thumbnail
 from .book_details_dialog import BookDetailsDialog
 from .database import Database
@@ -67,18 +71,22 @@ class LibraryWindow(QMainWindow):
         super().__init__()
         self.db = db
         self.setWindowTitle("PDF Library")
-        self.resize(880, 640)
+        self.resize(1080, 640)
         self.reader_windows = {}  # book_id -> ReaderWindow, kept alive while open
         self.show_favorites_only = False
         self.view_mode = db.get_setting("library_view_mode", "list")  # "list" or "grid"
         self._search_dialog = None
         self._details_dialog = None
         self._letter_headers = {}  # letter -> header QLabel, populated by _render_grid
+        self.selected_category_id = None  # None = "All Books" (no category filter)
+        self._selected_book_ids = set()  # multi-selection for bulk actions
+        self.select_mode = False  # while off, clicking a book does nothing (prevents accidental selection)
 
         self._build_ui()
         self._apply_theme(self.db.get_setting("theme", "light"))
         self.text_view_btn.setChecked(self.view_mode == "list")
         self.image_view_btn.setChecked(self.view_mode == "grid")
+        self.refresh_categories_sidebar()
         self.refresh_list()
 
     # ---------------- UI ----------------
@@ -124,6 +132,17 @@ class LibraryWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        self.select_mode_btn = QPushButton("Select")
+        self.select_mode_btn.setCheckable(True)
+        self.select_mode_btn.setToolTip(
+            "Turn on to click books and select them for bulk actions "
+            "(add to a category, remove several at once)"
+        )
+        self.select_mode_btn.clicked.connect(self.toggle_select_mode)
+        toolbar.addWidget(self.select_mode_btn)
+
+        toolbar.addSeparator()
+
         search_text_action = QAction("Search Text", self)
         search_text_action.setToolTip("Search for text inside all your books")
         search_text_action.triggered.connect(self.open_text_search)
@@ -136,8 +155,16 @@ class LibraryWindow(QMainWindow):
         self.theme_btn.clicked.connect(self.toggle_theme)
         toolbar.addWidget(self.theme_btn)
 
+        # ---- Overall layout: category sidebar (left) + main content (right) ----
         central = QWidget()
-        layout = QVBoxLayout(central)
+        outer = QHBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        outer.addWidget(self._build_category_sidebar())
+
+        main_content = QWidget()
+        layout = QVBoxLayout(main_content)
 
         controls = QHBoxLayout()
         self.search_box = QLineEdit()
@@ -170,8 +197,21 @@ class LibraryWindow(QMainWindow):
         controls.addWidget(self.sort_combo)
         layout.addLayout(controls)
 
-        # Live categorized preview (Titles / Authors / Series) shown while typing
-        # in the filter box; hidden whenever there's no text or no matches.
+        # Selection indicator: shown only while one or more books are selected.
+        selection_row = QHBoxLayout()
+        self.selection_label = QLabel("")
+        self.selection_label.setStyleSheet("color: #888;")
+        selection_row.addWidget(self.selection_label)
+        selection_row.addStretch()
+        self.clear_selection_btn = QPushButton("Clear Selection")
+        self.clear_selection_btn.clicked.connect(self.clear_selection)
+        selection_row.addWidget(self.clear_selection_btn)
+        layout.addLayout(selection_row)
+        self.selection_label.hide()
+        self.clear_selection_btn.hide()
+
+        # Live categorized preview (Titles / Authors / Series / Genres) shown
+        # while typing in the filter box; hidden whenever no text or no matches.
         self.suggestion_panel = QWidget()
         self.suggestion_layout = QVBoxLayout(self.suggestion_panel)
         self.suggestion_layout.setContentsMargins(6, 4, 6, 4)
@@ -187,38 +227,26 @@ class LibraryWindow(QMainWindow):
         self.list_widget.setSpacing(4)
         layout.addWidget(self.list_widget)
 
-        # "Image Preview" view: an alphabet index sidebar (only shown when sorted
-        # by title) next to a scrollable, wrapping grid of cover thumbnails,
-        # grouped under a letter header when alphabetically sorted.
+        # "Image Preview" view: a scrollable, wrapping grid of cover thumbnails,
+        # grouped under a letter header when sorted alphabetically, with a
+        # clickable A-Z index strip pinned above and below the grid.
         self.grid_container = QWidget()
-        grid_row = QHBoxLayout(self.grid_container)
-        grid_row.setContentsMargins(0, 0, 0, 0)
-        grid_row.setSpacing(4)
+        grid_col = QVBoxLayout(self.grid_container)
+        grid_col.setContentsMargins(0, 0, 0, 0)
+        grid_col.setSpacing(4)
 
-        self.alpha_sidebar = QWidget()
-        self.alpha_sidebar.setFixedWidth(26)
-        alpha_layout = QVBoxLayout(self.alpha_sidebar)
-        alpha_layout.setContentsMargins(0, 4, 0, 4)
-        alpha_layout.setSpacing(0)
-        self._alpha_buttons = {}
-        for letter in ALPHABET_INDEX:
-            btn = QPushButton(letter)
-            btn.setFlat(True)
-            btn.setFixedHeight(18)
-            btn.setToolTip(f"Jump to \u201c{letter}\u201d")
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet("font-size: 10px; padding: 0px; border: none;")
-            btn.setEnabled(False)
-            btn.clicked.connect(lambda checked=False, l=letter: self._jump_to_letter(l))
-            alpha_layout.addWidget(btn)
-            self._alpha_buttons[letter] = btn
-        self.alpha_sidebar.hide()
-        grid_row.addWidget(self.alpha_sidebar)
+        self.alpha_bar_top, self._alpha_buttons_top = self._build_alpha_bar()
+        self.alpha_bar_top.hide()
+        grid_col.addWidget(self.alpha_bar_top)
 
         self.grid_scroll = QScrollArea()
         self.grid_scroll.setWidgetResizable(True)
         self.grid_scroll.setFrameShape(QScrollArea.NoFrame)
-        grid_row.addWidget(self.grid_scroll, stretch=1)
+        grid_col.addWidget(self.grid_scroll, stretch=1)
+
+        self.alpha_bar_bottom, self._alpha_buttons_bottom = self._build_alpha_bar()
+        self.alpha_bar_bottom.hide()
+        grid_col.addWidget(self.alpha_bar_bottom)
 
         layout.addWidget(self.grid_container)
 
@@ -230,7 +258,279 @@ class LibraryWindow(QMainWindow):
         layout.addWidget(self.empty_label)
         self.empty_label.hide()
 
+        outer.addWidget(main_content, stretch=1)
         self.setCentralWidget(central)
+
+        # Clicking empty space (no book under the cursor) in either view clears
+        # the current multi-selection, so you don't have to click a selected
+        # book again or hunt for the Clear Selection button.
+        self.list_widget.viewport().installEventFilter(self)
+        self.grid_scroll.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            if obj is self.list_widget.viewport():
+                if self.list_widget.itemAt(event.position().toPoint()) is None:
+                    self.clear_selection()
+            elif obj is self.grid_scroll.viewport():
+                content = self.grid_scroll.widget()
+                if content is not None:
+                    local_pos = content.mapFromParent(event.position().toPoint())
+                    if content.childAt(local_pos) is None:
+                        self.clear_selection()
+        return super().eventFilter(obj, event)
+
+    def _build_alpha_bar(self):
+        """A horizontal, wrapping row of A-Z (+#) buttons that jump to that
+        letter's section in the grid. Returns (widget, {letter: button})."""
+        bar = QWidget()
+        bar_layout = FlowLayout(bar, margin=2, hspacing=2, vspacing=2)
+        buttons = {}
+        for letter in ALPHABET_INDEX:
+            btn = QPushButton(letter)
+            btn.setFlat(True)
+            btn.setFixedSize(24, 22)
+            btn.setToolTip(f"Jump to \u201c{letter}\u201d")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet("font-size: 10px; padding: 0px;")
+            btn.setEnabled(False)
+            btn.clicked.connect(lambda checked=False, l=letter: self._jump_to_letter(l))
+            bar_layout.addWidget(btn)
+            buttons[letter] = btn
+        return bar, buttons
+
+    def _build_category_sidebar(self):
+        sidebar = QWidget()
+        sidebar.setFixedWidth(200)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(8, 8, 8, 8)
+
+        header = QLabel("Categories")
+        header.setStyleSheet("font-weight: bold; font-size: 13px;")
+        sidebar_layout.addWidget(header)
+
+        new_cat_btn = QPushButton("+ New Category")
+        new_cat_btn.clicked.connect(self.create_new_category)
+        sidebar_layout.addWidget(new_cat_btn)
+
+        self.category_list = QListWidget()
+        self.category_list.itemClicked.connect(self._on_category_selected)
+        self.category_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.category_list.customContextMenuRequested.connect(self._show_category_context_menu)
+        sidebar_layout.addWidget(self.category_list)
+
+        hint = QLabel(
+            "Right-click a category to add books, favorite, rename, or delete it. "
+            "Right-click any book (or a multi-selection) to add it to a category."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        sidebar_layout.addWidget(hint)
+
+        return sidebar
+
+    # ------------- Categories -------------
+    def refresh_categories_sidebar(self):
+        self.category_list.clear()
+        none_item = QListWidgetItem("All Books (None)")
+        none_item.setData(Qt.UserRole, None)
+        self.category_list.addItem(none_item)
+
+        selected_row = 0
+        for i, cat in enumerate(self.db.get_categories(), start=1):
+            star = "\u2605 " if cat["is_favorite"] else ""
+            item = QListWidgetItem(f"{star}{cat['name']} ({cat['book_count']})")
+            item.setData(Qt.UserRole, cat["id"])
+            self.category_list.addItem(item)
+            if cat["id"] == self.selected_category_id:
+                selected_row = i
+        self.category_list.setCurrentRow(selected_row)
+
+    def _on_category_selected(self, item):
+        self.category_list.setCurrentItem(item)  # keep the highlight correct even
+        self.selected_category_id = item.data(Qt.UserRole)  # if called programmatically
+        self.refresh_list()
+
+    def create_new_category(self):
+        name, ok = QInputDialog.getText(self, "New Category", "Category name:")
+        if ok and name.strip():
+            self.db.create_category(name.strip())
+            self.refresh_categories_sidebar()
+
+    def _show_category_context_menu(self, pos):
+        item = self.category_list.itemAt(pos)
+        if item is None:
+            return
+        category_id = item.data(Qt.UserRole)
+        if category_id is None:
+            return  # the "All Books (None)" pseudo-entry has no actions
+        category = self.db.get_category(category_id)
+        if category is None:
+            return
+
+        menu = QMenu(self)
+        add_action = menu.addAction("Add Books...")
+        fav_label = "Remove from Favorite Categories" if category["is_favorite"] else "Favorite Category"
+        fav_action = menu.addAction(fav_label)
+        rename_action = menu.addAction("Rename...")
+        delete_action = menu.addAction("Delete Category")
+        chosen = menu.exec(self.category_list.viewport().mapToGlobal(pos))
+
+        if chosen == add_action:
+            self._open_add_to_category_dialog(category_id, category["name"])
+        elif chosen == fav_action:
+            self.db.toggle_category_favorite(category_id)
+            self.refresh_categories_sidebar()
+        elif chosen == rename_action:
+            self._rename_category(category_id, category["name"])
+        elif chosen == delete_action:
+            self._delete_category(category_id, category["name"])
+
+    def _rename_category(self, category_id, current_name):
+        name, ok = QInputDialog.getText(
+            self, "Rename Category", "New name:", text=current_name
+        )
+        if ok and name.strip():
+            if not self.db.rename_category(category_id, name.strip()):
+                QMessageBox.warning(
+                    self, "Couldn't rename", "A category with that name already exists."
+                )
+            self.refresh_categories_sidebar()
+
+    def _delete_category(self, category_id, name):
+        reply = QMessageBox.question(
+            self,
+            "Delete category",
+            f"Delete the category \u201c{name}\u201d? Your books stay in the "
+            f"library \u2014 they're just removed from this category.",
+        )
+        if reply == QMessageBox.Yes:
+            self.db.delete_category(category_id)
+            if self.selected_category_id == category_id:
+                self.selected_category_id = None
+            self.refresh_categories_sidebar()
+            self.refresh_list()
+
+    def _open_add_to_category_dialog(self, category_id, category_name):
+        dialog = AddToCategoryDialog(self.db, category_id, category_name, self)
+        dialog.books_added.connect(self.refresh_categories_sidebar)
+        dialog.books_added.connect(self.refresh_list)
+        dialog.exec()
+
+    # ------------- Multi-select & bulk actions -------------
+    def toggle_book_selection(self, book_id):
+        # Deferred: this is called synchronously from within the clicked
+        # card/cell's own mousePressEvent, and refresh_list() destroys that
+        # same widget tree -- rebuilding immediately would delete the widget
+        # while Qt is still mid-dispatch on its event, causing a crash.
+        if book_id in self._selected_book_ids:
+            self._selected_book_ids.discard(book_id)
+        else:
+            self._selected_book_ids.add(book_id)
+        self._update_selection_indicator()
+        QTimer.singleShot(0, self.refresh_list)
+
+    def clear_selection(self):
+        # Deferred for the same reason -- this can also be triggered from a
+        # book's own right-click context menu ("Clear Selection").
+        if not self._selected_book_ids:
+            return  # nothing to do -- avoid an unnecessary re-render
+        self._selected_book_ids.clear()
+        self._update_selection_indicator()
+        QTimer.singleShot(0, self.refresh_list)
+
+    def _update_selection_indicator(self):
+        n = len(self._selected_book_ids)
+        self.selection_label.setVisible(n > 0 or self.select_mode)
+        self.clear_selection_btn.setVisible(n > 0)
+        if n > 0:
+            self.selection_label.setText(
+                f"{n} book{'s' if n != 1 else ''} selected \u2014 right-click any "
+                f"selected book to add them all to a category"
+            )
+        elif self.select_mode:
+            self.selection_label.setText("Select mode is on \u2014 click books to select them")
+
+    def show_book_context_menu(self, book_id, global_pos):
+        if book_id in self._selected_book_ids and len(self._selected_book_ids) > 1:
+            self._show_bulk_context_menu(set(self._selected_book_ids), global_pos)
+        else:
+            self._show_single_context_menu(book_id, global_pos)
+
+    def _show_single_context_menu(self, book_id, global_pos):
+        menu = QMenu(self)
+        menu.addAction("Open").triggered.connect(lambda: self.open_book(book_id))
+        menu.addAction("Details").triggered.connect(lambda: self.open_book_details(book_id))
+        menu.addAction("Toggle Favorite").triggered.connect(lambda: self.toggle_favorite(book_id))
+        add_menu = menu.addMenu("Add to Category")
+        # Single-book action: don't touch any unrelated active multi-selection.
+        self._populate_category_menu(add_menu, [book_id], clear_selection_after=False)
+        menu.addAction("Remove from Library").triggered.connect(lambda: self.remove_book(book_id))
+        menu.exec(global_pos)
+
+    def _show_bulk_context_menu(self, book_ids, global_pos):
+        n = len(book_ids)
+        menu = QMenu(self)
+        add_menu = menu.addMenu(f"Add {n} Selected to Category")
+        # Bulk action: the selection has now been "used", so clear it once done.
+        self._populate_category_menu(add_menu, list(book_ids), clear_selection_after=True)
+        menu.addAction(f"Remove {n} Selected from Library").triggered.connect(
+            lambda: self._bulk_remove_books(list(book_ids))
+        )
+        menu.addAction("Clear Selection").triggered.connect(self.clear_selection)
+        menu.exec(global_pos)
+
+    def _populate_category_menu(self, menu, book_ids, clear_selection_after=False):
+        categories = self.db.get_categories()
+        if not categories:
+            empty_action = menu.addAction("(No categories yet)")
+            empty_action.setEnabled(False)
+        for cat in categories:
+            action = menu.addAction(cat["name"])
+            action.triggered.connect(
+                lambda checked=False, cid=cat["id"]: self._add_books_to_category(
+                    cid, book_ids, clear_selection_after
+                )
+            )
+        menu.addSeparator()
+        menu.addAction("New Category...").triggered.connect(
+            lambda: self._create_category_and_add(book_ids, clear_selection_after)
+        )
+
+    def _add_books_to_category(self, category_id, book_ids, clear_selection_after=False):
+        self.db.add_books_to_category(category_id, book_ids)
+        self.refresh_categories_sidebar()
+        if clear_selection_after:
+            self.clear_selection()
+
+    def _create_category_and_add(self, book_ids, clear_selection_after=False):
+        name, ok = QInputDialog.getText(self, "New Category", "Category name:")
+        if not ok or not name.strip():
+            return
+        category = self.db.create_category(name.strip())
+        if category:
+            self.db.add_books_to_category(category["id"], book_ids)
+            self.refresh_categories_sidebar()
+            if clear_selection_after:
+                self.clear_selection()
+
+    def _bulk_remove_books(self, book_ids):
+        reply = QMessageBox.question(
+            self,
+            "Remove books",
+            f"Remove {len(book_ids)} book(s) from your library? "
+            f"The files themselves won't be deleted.",
+        )
+        if reply == QMessageBox.Yes:
+            for book_id in book_ids:
+                self.db.remove_book(book_id)
+                delete_thumbnail(book_id)
+                self._selected_book_ids.discard(book_id)
+            self._update_selection_indicator()
+            # Deferred: this can be triggered from a right-click on one of the
+            # very books being removed, whose event Qt is still dispatching.
+            QTimer.singleShot(0, self.refresh_list)
+            QTimer.singleShot(0, self.refresh_categories_sidebar)
 
     # ------------- Actions -------------
     def add_books(self):
@@ -312,6 +612,7 @@ class LibraryWindow(QMainWindow):
             sort_by=sort_by,
             descending=descending,
             status=status_filter,
+            category_id=self.selected_category_id,
         )
 
         self.empty_label.setVisible(len(books) == 0)
@@ -388,11 +689,17 @@ class LibraryWindow(QMainWindow):
         self.list_widget.clear()
         for book in books:
             item = QListWidgetItem()
-            card = BookCard(book)
+            card = BookCard(
+                book,
+                selected=book["id"] in self._selected_book_ids,
+                select_mode=self.select_mode,
+            )
             card.open_requested.connect(self.open_book)
             card.favorite_toggled.connect(self.toggle_favorite)
             card.remove_requested.connect(self.remove_book)
             card.details_requested.connect(self.open_book_details)
+            card.selection_toggled.connect(self.toggle_book_selection)
+            card.context_menu_requested.connect(self.show_book_context_menu)
             item.setSizeHint(card.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, card)
@@ -406,7 +713,8 @@ class LibraryWindow(QMainWindow):
 
         self._letter_headers = {}
         is_alpha_sort = sort_by == "title"
-        self.alpha_sidebar.setVisible(is_alpha_sort)
+        self.alpha_bar_top.setVisible(is_alpha_sort)
+        self.alpha_bar_bottom.setVisible(is_alpha_sort)
 
         if is_alpha_sort and books:
             groups = OrderedDict()
@@ -421,16 +729,18 @@ class LibraryWindow(QMainWindow):
                 outer.addWidget(header)
                 outer.addWidget(self._build_cover_group(group_books))
                 self._letter_headers[letter] = header
-            self._update_alpha_sidebar(set(groups.keys()))
+            self._update_alpha_bars(set(groups.keys()))
         elif books:
             outer.addWidget(self._build_cover_group(books))
 
         outer.addStretch()
         self.grid_scroll.setWidget(content)
 
-    def _update_alpha_sidebar(self, active_letters):
-        for letter, btn in self._alpha_buttons.items():
-            btn.setEnabled(letter in active_letters)
+    def _update_alpha_bars(self, active_letters):
+        for letter in ALPHABET_INDEX:
+            active = letter in active_letters
+            self._alpha_buttons_top[letter].setEnabled(active)
+            self._alpha_buttons_bottom[letter].setEnabled(active)
 
     def _jump_to_letter(self, letter):
         header = self._letter_headers.get(letter)
@@ -443,11 +753,18 @@ class LibraryWindow(QMainWindow):
         for book in books:
             pixmap = ensure_thumbnail(book["id"], book["filepath"])
             pixmap = decorate_thumbnail(pixmap, book.get("status") or "unread", bool(book.get("is_favorite")))
-            cell = CoverCell(book, pixmap)
+            cell = CoverCell(
+                book,
+                pixmap,
+                selected=book["id"] in self._selected_book_ids,
+                select_mode=self.select_mode,
+            )
             cell.open_requested.connect(self.open_book)
             cell.details_requested.connect(self.open_book_details)
             cell.favorite_toggled.connect(self.toggle_favorite)
             cell.remove_requested.connect(self.remove_book)
+            cell.selection_toggled.connect(self.toggle_book_selection)
+            cell.context_menu_requested.connect(self.show_book_context_menu)
             flow.addWidget(cell)
         return group_widget
 
@@ -456,6 +773,12 @@ class LibraryWindow(QMainWindow):
         self.db.set_setting("library_view_mode", mode)
         self.text_view_btn.setChecked(mode == "list")
         self.image_view_btn.setChecked(mode == "grid")
+        self.refresh_list()
+
+    def toggle_select_mode(self, checked):
+        self.select_mode_btn.setChecked(checked)
+        self.select_mode = checked
+        self._update_selection_indicator()
         self.refresh_list()
 
     def open_text_search(self):
@@ -484,8 +807,10 @@ class LibraryWindow(QMainWindow):
             win.activateWindow()
 
     def toggle_favorite(self, book_id):
+        # Deferred: this is reachable from the card/cell's own fav button or
+        # right-click menu, both nested within that widget's own event chain.
         self.db.toggle_favorite(book_id)
-        self.refresh_list()
+        QTimer.singleShot(0, self.refresh_list)
 
     def remove_book(self, book_id):
         reply = QMessageBox.question(
@@ -496,7 +821,12 @@ class LibraryWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             self.db.remove_book(book_id)
             delete_thumbnail(book_id)
-            self.refresh_list()
+            self._selected_book_ids.discard(book_id)
+            self._update_selection_indicator()
+            # Deferred: reachable from the book's own right-click menu / remove
+            # button, whose event Qt may still be dispatching on this widget.
+            QTimer.singleShot(0, self.refresh_list)
+            QTimer.singleShot(0, self.refresh_categories_sidebar)
 
     def open_book(self, book_id):
         book = self.db.get_book(book_id)

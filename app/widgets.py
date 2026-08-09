@@ -1,7 +1,7 @@
 """Reusable small widgets: the book row card for list view, and the cover
 cell for the image-preview grid."""
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 STATUS_CHIP_STYLE = (
     "color: white; border-radius: 8px; padding: 1px 8px;"
@@ -21,22 +21,29 @@ def human_size(num_bytes):
 
 
 class BookCard(QWidget):
-    """A single book row for the Simple Text list view. Left-click buttons
-    handle Favorite/Open/Remove directly; Details is only available via the
-    right-click context menu, so browsing the list doesn't keep popping it open."""
+    """A single book row for the Simple Text list view. The Favorite/Open/Remove
+    buttons act directly; a plain click on the row body toggles multi-select
+    (shown as a highlighted border); Details and category actions live in the
+    right-click context menu (built by the library window, which knows about
+    the current multi-selection)."""
 
     open_requested = Signal(int)
     favorite_toggled = Signal(int)
     remove_requested = Signal(int)
     details_requested = Signal(int)  # emitted only from the right-click menu
+    selection_toggled = Signal(int)  # emitted on a plain click on the row body
+    context_menu_requested = Signal(int, object)  # book_id, global QPoint
 
-    def __init__(self, book: dict, parent=None):
+    def __init__(self, book: dict, parent=None, selected=False, select_mode=False):
         super().__init__(parent)
         self.book_id = book["id"]
+        self.select_mode = select_mode
         self.setObjectName("BookCard")
         self.setAttribute(Qt.WA_StyledBackground, True)  # let stylesheet hover/background paint
         self.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_context_menu)
+        self.customContextMenuRequested.connect(
+            lambda pos: self.context_menu_requested.emit(self.book_id, self.mapToGlobal(pos))
+        )
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -96,46 +103,55 @@ class BookCard(QWidget):
         remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.book_id))
         layout.addWidget(remove_btn)
 
-        self.setToolTip("Right-click for details (author, series, notes...)")
-
-    def _show_context_menu(self, pos):
-        menu = self._build_context_menu()
-        menu.exec(self.mapToGlobal(pos))
-
-    def _build_context_menu(self):
-        menu = QMenu(self)
-        menu.addAction("Open").triggered.connect(lambda: self.open_requested.emit(self.book_id))
-        menu.addAction("Details").triggered.connect(lambda: self.details_requested.emit(self.book_id))
-        menu.addAction("Toggle Favorite").triggered.connect(
-            lambda: self.favorite_toggled.emit(self.book_id)
+        self.setToolTip(
+            "Click to select (turn on Select mode) \u00b7 right-click for details, categories, and more"
+            if select_mode else
+            "Turn on Select mode to select books \u00b7 right-click for details, categories, and more"
         )
-        menu.addAction("Remove from Library").triggered.connect(
-            lambda: self.remove_requested.emit(self.book_id)
-        )
-        return menu
+        if select_mode:
+            self.setCursor(Qt.PointingHandCursor)
+        self.set_selected(selected)
+
+    def mousePressEvent(self, event):
+        if self.select_mode and event.button() == Qt.LeftButton:
+            self.selection_toggled.emit(self.book_id)
+        super().mousePressEvent(event)
+
+    def set_selected(self, selected):
+        self._selected = selected
+        self.setProperty("selected", "true" if selected else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class CoverCell(QWidget):
     """A single book cover cell for the image-preview grid: thumbnail + title.
-    Double click opens the reader; Details (and everything else) lives in the
-    right-click context menu, so browsing the grid doesn't keep popping it open."""
+    Double click opens the reader; a plain click toggles multi-select (shown
+    as a highlighted border); Details and category actions live in the
+    right-click context menu (built by the library window, which knows about
+    the current multi-selection)."""
 
     open_requested = Signal(int)
     details_requested = Signal(int)  # emitted only from the right-click menu
     favorite_toggled = Signal(int)
     remove_requested = Signal(int)
+    selection_toggled = Signal(int)  # emitted on a plain click
+    context_menu_requested = Signal(int, object)  # book_id, global QPoint
 
     CELL_WIDTH = 150
 
-    def __init__(self, book: dict, pixmap, parent=None):
+    def __init__(self, book: dict, pixmap, parent=None, selected=False, select_mode=False):
         super().__init__(parent)
         self.book_id = book["id"]
+        self.select_mode = select_mode
         self.setObjectName("CoverCell")
         self.setAttribute(Qt.WA_StyledBackground, True)  # let stylesheet hover/background paint
         self.setFixedWidth(self.CELL_WIDTH)
         self.setCursor(Qt.PointingHandCursor)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_context_menu)
+        self.customContextMenuRequested.connect(
+            lambda pos: self.context_menu_requested.emit(self.book_id, self.mapToGlobal(pos))
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -166,29 +182,29 @@ class CoverCell(QWidget):
             tooltip_bits.append("\u2713 Finished")
         elif status == "reading":
             tooltip_bits.append("Currently reading")
-        tooltip_bits.append("Double-click to open \u00b7 right-click for details")
+        tooltip_bits.append(
+            "Click to select \u00b7 double-click to open \u00b7 right-click for more"
+            if select_mode else
+            "Turn on Select mode to select \u00b7 double-click to open \u00b7 right-click for more"
+        )
         self.setToolTip("\n".join(tooltip_bits))
+        self.set_selected(selected)
+
+    def mousePressEvent(self, event):
+        if self.select_mode and event.button() == Qt.LeftButton:
+            self.selection_toggled.emit(self.book_id)
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.open_requested.emit(self.book_id)
         super().mouseDoubleClickEvent(event)
 
-    def _show_context_menu(self, pos):
-        menu = self._build_context_menu()
-        menu.exec(self.mapToGlobal(pos))
-
-    def _build_context_menu(self):
-        menu = QMenu(self)
-        menu.addAction("Open").triggered.connect(lambda: self.open_requested.emit(self.book_id))
-        menu.addAction("Details").triggered.connect(lambda: self.details_requested.emit(self.book_id))
-        menu.addAction("Toggle Favorite").triggered.connect(
-            lambda: self.favorite_toggled.emit(self.book_id)
-        )
-        menu.addAction("Remove from Library").triggered.connect(
-            lambda: self.remove_requested.emit(self.book_id)
-        )
-        return menu
+    def set_selected(self, selected):
+        self._selected = selected
+        self.setProperty("selected", "true" if selected else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 def _escape(text):

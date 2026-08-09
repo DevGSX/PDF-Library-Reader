@@ -45,6 +45,19 @@ class Database:
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+            CREATE TABLE IF NOT EXISTS categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                is_favorite INTEGER DEFAULT 0,
+                created_date TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS book_categories (
+                book_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                PRIMARY KEY (book_id, category_id),
+                FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+            );
             """
         )
         self.conn.commit()
@@ -87,11 +100,17 @@ class Database:
         cur = self.conn.execute("SELECT * FROM books WHERE id = ?", (book_id,))
         return cur.fetchone()
 
-    def get_books(self, favorites_only=False, search=None, sort_by="title", descending=False, status=None):
+    def get_books(self, favorites_only=False, search=None, sort_by="title", descending=False,
+                  status=None, category_id=None):
         """Return library entries as plain dicts, each carrying a live file_size.
-        `status`, if given, restricts to one of 'unread' | 'reading' | 'finished'."""
-        query = "SELECT * FROM books"
+        `status`, if given, restricts to one of 'unread' | 'reading' | 'finished'.
+        `category_id`, if given, restricts to books belonging to that category."""
+        query = "SELECT books.* FROM books"
         clauses, params = [], []
+        if category_id is not None:
+            query += " JOIN book_categories ON book_categories.book_id = books.id"
+            clauses.append("book_categories.category_id = ?")
+            params.append(category_id)
         if favorites_only:
             clauses.append("is_favorite = 1")
         if status:
@@ -212,6 +231,111 @@ class Database:
         book = self.get_book(book_id)
         if book and (book["status"] or "unread") == "unread":
             self.set_status(book_id, "reading")
+
+    # ---------------- Categories ----------------
+    def create_category(self, name):
+        """Create a category (a no-op if the name already exists, case-insensitively).
+        Returns the category row either way."""
+        name = (name or "").strip()
+        if not name:
+            return None
+        now = datetime.now().isoformat()
+        self.conn.execute(
+            "INSERT OR IGNORE INTO categories (name, created_date) VALUES (?, ?)",
+            (name, now),
+        )
+        self.conn.commit()
+        return self.get_category_by_name(name)
+
+    def get_category_by_name(self, name):
+        cur = self.conn.execute(
+            "SELECT * FROM categories WHERE name = ? COLLATE NOCASE", (name,)
+        )
+        return cur.fetchone()
+
+    def get_category(self, category_id):
+        cur = self.conn.execute("SELECT * FROM categories WHERE id = ?", (category_id,))
+        return cur.fetchone()
+
+    def get_categories(self):
+        """All categories as plain dicts with a live book_count, favorites first
+        then alphabetical (case-insensitive)."""
+        cur = self.conn.execute(
+            """
+            SELECT categories.*, COUNT(book_categories.book_id) AS book_count
+            FROM categories
+            LEFT JOIN book_categories ON book_categories.category_id = categories.id
+            GROUP BY categories.id
+            ORDER BY categories.is_favorite DESC, categories.name COLLATE NOCASE ASC
+            """
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def rename_category(self, category_id, new_name):
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return False
+        try:
+            self.conn.execute(
+                "UPDATE categories SET name = ? WHERE id = ?", (new_name, category_id)
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False  # another category already has this name
+
+    def delete_category(self, category_id):
+        self.conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+        self.conn.commit()
+
+    def toggle_category_favorite(self, category_id):
+        self.conn.execute(
+            "UPDATE categories SET is_favorite = 1 - is_favorite WHERE id = ?", (category_id,)
+        )
+        self.conn.commit()
+
+    def add_books_to_category(self, category_id, book_ids):
+        """Bulk-add books to a category; duplicates are silently ignored."""
+        book_ids = list(book_ids)
+        if not book_ids:
+            return 0
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO book_categories (book_id, category_id) VALUES (?, ?)",
+            [(bid, category_id) for bid in book_ids],
+        )
+        self.conn.commit()
+        return len(book_ids)
+
+    def remove_book_from_category(self, category_id, book_id):
+        self.conn.execute(
+            "DELETE FROM book_categories WHERE category_id = ? AND book_id = ?",
+            (category_id, book_id),
+        )
+        self.conn.commit()
+
+    def get_book_ids_by_author(self, author):
+        cur = self.conn.execute(
+            "SELECT id FROM books WHERE author = ? COLLATE NOCASE", (author,)
+        )
+        return [r["id"] for r in cur.fetchall()]
+
+    def get_book_ids_by_series(self, series):
+        cur = self.conn.execute(
+            "SELECT id FROM books WHERE series = ? COLLATE NOCASE", (series,)
+        )
+        return [r["id"] for r in cur.fetchall()]
+
+    def get_categories_for_book(self, book_id):
+        cur = self.conn.execute(
+            """
+            SELECT categories.* FROM categories
+            JOIN book_categories ON book_categories.category_id = categories.id
+            WHERE book_categories.book_id = ?
+            ORDER BY categories.name COLLATE NOCASE
+            """,
+            (book_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
     # ---------------- Bookmarks ----------------
     def add_bookmark(self, book_id, page_number, label=""):

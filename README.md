@@ -65,12 +65,31 @@ and a distraction-free "simple text" reading mode.
 - **Status filter** — a "Status" dropdown next to the filter box narrows the
   library to None (no filter), Currently Reading, Finished, or Unread —
   combinable with Favorites and the title filter.
-- **Alphabetical grouping with a jump-to-letter sidebar** — in Image Preview,
+- **Alphabetical grouping with a jump-to-letter bar** — in Image Preview,
   sorting by Title (A-Z or Z-A) groups covers under letter headers (A, B,
-  C... with "#" for titles starting with a number or symbol) and shows an
-  A-Z index strip down the left edge. Letters with matching books are
-  clickable and jump straight to that section; letters with nothing yet are
-  grayed out. The sidebar only appears while sorted alphabetically.
+  C... with "#" for titles starting with a number or symbol), with a
+  clickable A-Z index strip pinned above *and* below the grid so you can
+  jump to any letter without scrolling back up first. Letters with matching
+  books are clickable; letters with nothing yet are grayed out. The bars
+  only appear while sorted alphabetically.
+- **Categories** — organize your library into your own custom categories,
+  shown in a sidebar on the left with a live book count for each (and a
+  star for ones you've favorited). Selecting **All Books (None)** shows
+  everything as normal; selecting a category filters the list to just its
+  books. Right-click a category to **Add Books...** — search by **Title**
+  to add one specific book, or by **Author**/**Series** to add every
+  matching book at once, with a **Text** / **Image Preview** toggle so title
+  matches can show as cover thumbnails — or right-click a category to
+  favorite, rename, or delete it (deleting a category never deletes the
+  books themselves). Turn on **Select** in the toolbar to multi-select books
+  (click to select, click again to deselect, or click empty space to clear
+  the whole selection); with Select off, clicking a book does nothing, so
+  you can browse normally without ever selecting one by accident. While
+  selected, right-click any selected book to add the whole selection to a
+  category, or remove them all from the library at once — works in both
+  Simple Text and Image Preview. The selection automatically clears itself
+  once you've added the books to a category, so it's ready for the next
+  thing without an extra click.
 - **Bookmarks** — save a bookmark (with an optional label) on any page inside
   a book, jump back to it later, remove it when you're done. The panel has
   its own "Bookmarks" toggle button next to "+ Bookmark" in the toolbar, so
