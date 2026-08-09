@@ -8,6 +8,16 @@ and a distraction-free "simple text" reading mode.
 
 - **Library / main menu** — every PDF you add, shown with title, file size,
   page count and last-read date.
+- **Title comes from the filename, not the PDF's internal metadata** — when
+  you add a book, its Title (and Author/Series/Genre, if present) are read
+  from the filename itself, e.g. adding a file named
+  `Dune * Frank Herbert * Dune Saga * Science Fiction.pdf` fills in all four
+  fields automatically. A plain filename with no `*` separators is used as
+  the title as-is. Either way, the PDF's own embedded metadata is ignored,
+  since it's often unreliable — many tools stamp it with whatever the
+  document's first heading happened to be, not the actual book title.
+  Re-scanning a folder you've already added never overwrites metadata you
+  edited by hand.
 - **Two library views** — **Simple Text**, the detailed list (title, size,
   page count, last read), and **Image Preview**, a grid of page-1 thumbnails
   like a bookshelf. Thumbnails are generated once and cached to disk, so
@@ -70,6 +80,12 @@ and a distraction-free "simple text" reading mode.
   image viewer. The cursor shows an open hand when a page can be panned, and
   a closed hand while actively dragging. Disabled in Simple Text mode (there's
   nothing to pan — text just wraps to fit).
+- **Scroll-to-change-page only when it's safe to** — plain mouse scroll turns
+  the page while "Fit to Screen" is on, or in Simple Text mode once you hit
+  the top/bottom edge. The moment you zoom in manually, plain scroll only
+  pans around the page — it never flips pages by accident anymore. Hold the
+  **middle mouse button** while scrolling to explicitly turn the page even
+  while zoomed in.
 - **Fit to Screen** — on by default. Each page is automatically scaled to
   fill the window, recalculated per page, so pages of different sizes within
   the same book (tall, wide, mixed scans...) all display at a sensible size
@@ -129,7 +145,10 @@ deletes the underlying PDF file.
 
 | Shortcut       | Action                        |
 |----------------|--------------------------------|
-| ← / →          | Previous / next page (also works via mouse scroll, and Ctrl+scroll zooms) |
+| ← / →          | Previous / next page          |
+| Scroll         | Turn page (when Fit to Screen is on) or pan (when zoomed in) |
+| Middle-click + Scroll | Turn page even while zoomed in |
+| Ctrl + Scroll  | Zoom in/out                   |
 | Ctrl + =       | Increase text size / zoom in  |
 | Ctrl + -       | Decrease text size / zoom out |
 | Ctrl + D       | Add a bookmark on this page   |

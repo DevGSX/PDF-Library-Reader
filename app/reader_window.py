@@ -294,13 +294,19 @@ class ReaderWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _handle_wheel(self, event):
-        """Ctrl+scroll zooms (or resizes text); plain scroll pans a zoomed-in
-        page as usual, but turns the page once you scroll past the top/bottom
-        edge -- and turns it immediately when the whole page already fits."""
+        """Ctrl+scroll zooms (or resizes text). Plain scroll turns pages only
+        when the page is fit to the screen (nothing to accidentally scroll
+        past) or in Simple Text mode (scroll past the top/bottom edge). Once
+        you've zoomed in manually, plain scroll only pans the page -- holding
+        the middle mouse button while scrolling explicitly turns the page
+        instead, so you can't flip pages by accident while panning around a
+        zoomed-in page."""
         if self.doc is None:
             return False
 
-        if event.modifiers() & Qt.ControlModifier:
+        modifiers = event.modifiers()
+
+        if modifiers & Qt.ControlModifier:
             delta = event.angleDelta().y()
             if delta > 0:
                 self.increase_text_size()
@@ -312,20 +318,40 @@ class ReaderWindow(QMainWindow):
         if delta_y == 0:
             return False
 
-        vbar = self.text_browser.verticalScrollBar() if self.simple_text_mode else self.scroll_area.verticalScrollBar()
-        at_top = vbar.value() <= vbar.minimum()
-        at_bottom = vbar.value() >= vbar.maximum()
+        if self.simple_text_mode:
+            vbar = self.text_browser.verticalScrollBar()
+            at_top = vbar.value() <= vbar.minimum()
+            at_bottom = vbar.value() >= vbar.maximum()
+            if delta_y > 0 and not at_top:
+                return False  # room to scroll up within the text -- let it scroll normally
+            if delta_y < 0 and not at_bottom:
+                return False  # room to scroll down within the text -- let it scroll normally
+            if delta_y > 0:
+                self.prev_page()
+            else:
+                self.next_page()
+            return True
 
-        if delta_y > 0 and not at_top:
-            return False  # room to scroll up within the page -- let it scroll normally
-        if delta_y < 0 and not at_bottom:
-            return False  # room to scroll down within the page -- let it scroll normally
+        if self.auto_fit:
+            # Page fits the screen entirely -- nothing to accidentally scroll
+            # past, so plain scroll always turns the page.
+            if delta_y > 0:
+                self.prev_page()
+            else:
+                self.next_page()
+            return True
 
-        if delta_y > 0:
-            self.prev_page()
-        else:
-            self.next_page()
-        return True
+        # Zoomed in manually: plain scroll only pans, never changes pages by
+        # accident. Holding the middle mouse button while scrolling is the
+        # explicit "turn the page anyway" gesture.
+        if event.buttons() & Qt.MiddleButton:
+            if delta_y > 0:
+                self.prev_page()
+            else:
+                self.next_page()
+            return True
+
+        return False  # let the scroll area pan normally
 
     # ------------- Click-and-drag panning (zoomed-in pages) -------------
     def _handle_pan_press(self, event):

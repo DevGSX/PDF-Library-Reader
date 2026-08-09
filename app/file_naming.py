@@ -27,6 +27,31 @@ def build_filename(title, author, series, genre, ext):
     return f"{name}{ext}"
 
 
+def parse_filename(filename):
+    """Inverse of build_filename(): given a filename (with or without its
+    extension) split on ' * ' into title/author/series/genre. Title always
+    ends up populated (falling back to the whole filename, or 'Untitled' if
+    even that is empty); the rest default to '' when not present. Extra
+    segments beyond four are ignored.
+
+    This only round-trips exactly for filenames this app generated -- if a
+    field was left blank when the file was named, later fields shift up by
+    one slot, since a plain 'A * B * C' has no way to record *which* field
+    was skipped. Title itself is never ambiguous: it's always the first
+    segment when present, since the app never lets Title be saved blank.
+    """
+    name = os.path.splitext(filename)[0]
+    parts = [p.strip() for p in name.split(" * ")]
+    parts = [p for p in parts if p]
+    if not parts:
+        return {"title": "Untitled", "author": "", "series": "", "genre": ""}
+    keys = ["title", "author", "series", "genre"]
+    result = {k: "" for k in keys}
+    for key, value in zip(keys, parts):
+        result[key] = value
+    return result
+
+
 def _unique_path(directory, filename):
     base, ext = os.path.splitext(filename)
     candidate = os.path.join(directory, filename)

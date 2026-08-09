@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from .badges import decorate_thumbnail
 from .book_details_dialog import BookDetailsDialog
 from .database import Database
+from .file_naming import parse_filename
 from .flow_layout import FlowLayout
 from .reader_window import ReaderWindow
 from .search_dialog import TextSearchDialog
@@ -254,18 +255,34 @@ class LibraryWindow(QMainWindow):
         QMessageBox.information(self, "Import complete", f"Added {count} PDF file(s).")
 
     def _import_pdf(self, path):
-        title = os.path.splitext(os.path.basename(path))[0]
+        abs_path = os.path.abspath(path)
+        is_new_book = self.db.get_book_by_path(abs_path) is None
+
+        # Title (and Author/Series/Genre, when present) come from the filename
+        # itself -- e.g. "Dune * Frank Herbert * Dune Saga * Sci-Fi.pdf" --
+        # rather than the PDF's own internal metadata, which often reflects
+        # whatever a document's first heading happened to be, not the actual
+        # book title.
+        parsed = parse_filename(os.path.basename(path))
+
         page_count = 0
         try:
             doc = fitz.open(path)
-            meta_title = (doc.metadata or {}).get("title") or ""
-            if meta_title.strip():
-                title = meta_title.strip()
             page_count = doc.page_count
             doc.close()
         except Exception:
-            pass  # keep filename-derived title, page_count stays 0
-        self.db.add_book(os.path.abspath(path), title, page_count)
+            pass  # page_count stays 0; title still comes from the filename
+
+        book = self.db.add_book(abs_path, parsed["title"], page_count)
+        if book and is_new_book and (parsed["author"] or parsed["series"] or parsed["genre"]):
+            # Only backfill these for a genuinely new import -- never overwrite
+            # metadata someone already edited by hand on a book already in the library.
+            self.db.update_metadata(
+                book["id"],
+                author=parsed["author"],
+                series=parsed["series"],
+                genre=parsed["genre"],
+            )
 
     def set_favorites_filter(self, favorites_only):
         self.show_favorites_only = favorites_only
