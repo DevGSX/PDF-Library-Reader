@@ -72,7 +72,10 @@ and a distraction-free "simple text" reading mode.
   clickable and jump straight to that section; letters with nothing yet are
   grayed out. The sidebar only appears while sorted alphabetically.
 - **Bookmarks** — save a bookmark (with an optional label) on any page inside
-  a book, jump back to it later, remove it when you're done.
+  a book, jump back to it later, remove it when you're done. The panel has
+  its own "Bookmarks" toggle button next to "+ Bookmark" in the toolbar, so
+  if you close the panel with its own [x] button, that same toggle brings it
+  right back.
 - **Text size** — A+ / A- controls zoom in normal view and font size in
   simple text mode. Your last setting is remembered.
 - **Click-and-drag panning** — when you've zoomed in past what fits the

@@ -168,6 +168,13 @@ class ReaderWindow(QMainWindow):
         bookmark_action.triggered.connect(self.add_bookmark)
         toolbar.addAction(bookmark_action)
 
+        self.bookmarks_btn = QPushButton("Bookmarks")
+        self.bookmarks_btn.setToolTip("Show or hide the bookmarks panel")
+        self.bookmarks_btn.setCheckable(True)
+        self.bookmarks_btn.setChecked(True)  # the panel starts open
+        self.bookmarks_btn.clicked.connect(self.toggle_bookmarks_dock)
+        toolbar.addWidget(self.bookmarks_btn)
+
         # Central viewing area holds both the page-image view and the plain
         # text view; only one is visible at a time depending on the mode.
         container = QWidget()
@@ -208,6 +215,20 @@ class ReaderWindow(QMainWindow):
         layout.addWidget(remove_btn)
         dock.setWidget(holder)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+        self.bookmarks_dock = dock
+        # Keep the toolbar button in sync if the panel is closed via its own
+        # [x] button (or reopened some other way), not just via our toggle.
+        dock.visibilityChanged.connect(self._on_bookmarks_dock_visibility_changed)
+
+    def toggle_bookmarks_dock(self, checked):
+        self.bookmarks_btn.setChecked(checked)
+        self.bookmarks_dock.setVisible(checked)
+        if checked:
+            self.bookmarks_dock.raise_()
+
+    def _on_bookmarks_dock_visibility_changed(self, visible):
+        self.bookmarks_btn.setChecked(visible)
 
     def _fav_label(self):
         return "\u2605 Favorited" if self.book["is_favorite"] else "\u2606 Favorite"
