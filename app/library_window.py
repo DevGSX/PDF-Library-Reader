@@ -81,6 +81,7 @@ class LibraryWindow(QMainWindow):
         self.selected_category_id = None  # None = "All Books" (no category filter)
         self._selected_book_ids = set()  # multi-selection for bulk actions
         self.select_mode = False  # while off, clicking a book does nothing (prevents accidental selection)
+        self.library_page = 1  # current page when paginating (only applies to non-alphabetical sorts)
 
         self._build_ui()
         self._apply_theme(self.db.get_setting("theme", "light"))
@@ -171,7 +172,7 @@ class LibraryWindow(QMainWindow):
         self.search_box.setPlaceholderText(
             "Filter by title, author, series, or genre... (use \u201cSearch Text\u201d to search inside books)"
         )
-        self.search_box.textChanged.connect(self.refresh_list)
+        self.search_box.textChanged.connect(self._reset_page_and_refresh)
         self.search_box.textChanged.connect(self._update_search_suggestions)
         controls.addWidget(self.search_box, stretch=1)
 
@@ -179,7 +180,7 @@ class LibraryWindow(QMainWindow):
         self.status_filter_combo = QComboBox()
         for label, value in STATUS_FILTER_OPTIONS:
             self.status_filter_combo.addItem(label, value)
-        self.status_filter_combo.currentIndexChanged.connect(self.refresh_list)
+        self.status_filter_combo.currentIndexChanged.connect(self._reset_page_and_refresh)
         controls.addWidget(self.status_filter_combo)
 
         self.sort_combo = QComboBox()
@@ -193,8 +194,19 @@ class LibraryWindow(QMainWindow):
                 "File Size (Smallest)",
             ]
         )
-        self.sort_combo.currentIndexChanged.connect(self.refresh_list)
+        self.sort_combo.currentIndexChanged.connect(self._reset_page_and_refresh)
         controls.addWidget(self.sort_combo)
+
+        controls.addWidget(QLabel("Per page:"))
+        self.per_page_combo = QComboBox()
+        self.per_page_combo.addItems(["All", "10", "25", "50", "100"])
+        self.per_page_combo.setToolTip(
+            "Split Recently Read / Oldest Read / File Size results into pages "
+            "instead of showing them all at once (not available for Title sort, "
+            "which uses the A-Z index instead)"
+        )
+        self.per_page_combo.currentIndexChanged.connect(self._reset_page_and_refresh)
+        controls.addWidget(self.per_page_combo)
         layout.addLayout(controls)
 
         # Selection indicator: shown only while one or more books are selected.
@@ -229,7 +241,7 @@ class LibraryWindow(QMainWindow):
 
         # "Image Preview" view: a scrollable, wrapping grid of cover thumbnails,
         # grouped under a letter header when sorted alphabetically, with a
-        # clickable A-Z index strip pinned above and below the grid.
+        # clickable A-Z index strip pinned above the grid.
         self.grid_container = QWidget()
         grid_col = QVBoxLayout(self.grid_container)
         grid_col.setContentsMargins(0, 0, 0, 0)
@@ -244,10 +256,6 @@ class LibraryWindow(QMainWindow):
         self.grid_scroll.setFrameShape(QScrollArea.NoFrame)
         grid_col.addWidget(self.grid_scroll, stretch=1)
 
-        self.alpha_bar_bottom, self._alpha_buttons_bottom = self._build_alpha_bar()
-        self.alpha_bar_bottom.hide()
-        grid_col.addWidget(self.alpha_bar_bottom)
-
         layout.addWidget(self.grid_container)
 
         self.empty_label = QLabel(
@@ -257,6 +265,23 @@ class LibraryWindow(QMainWindow):
         self.empty_label.setStyleSheet("color: #999; padding: 40px;")
         layout.addWidget(self.empty_label)
         self.empty_label.hide()
+
+        # Pagination nav: only shown when "Per page" isn't "All" and the sort
+        # isn't Title (which uses the A-Z index instead of pages).
+        self.pagination_widget = QWidget()
+        self.pagination_row = QHBoxLayout(self.pagination_widget)
+        self.pagination_row.addStretch()
+        self.prev_page_btn = QPushButton("\u25c0 Previous")
+        self.prev_page_btn.clicked.connect(self._go_to_prev_page)
+        self.pagination_row.addWidget(self.prev_page_btn)
+        self.page_indicator_label = QLabel("")
+        self.pagination_row.addWidget(self.page_indicator_label)
+        self.next_page_btn = QPushButton("Next \u25b6")
+        self.next_page_btn.clicked.connect(self._go_to_next_page)
+        self.pagination_row.addWidget(self.next_page_btn)
+        self.pagination_row.addStretch()
+        layout.addWidget(self.pagination_widget)
+        self.pagination_widget.hide()
 
         outer.addWidget(main_content, stretch=1)
         self.setCentralWidget(central)
@@ -349,6 +374,7 @@ class LibraryWindow(QMainWindow):
     def _on_category_selected(self, item):
         self.category_list.setCurrentItem(item)  # keep the highlight correct even
         self.selected_category_id = item.data(Qt.UserRole)  # if called programmatically
+        self.library_page = 1
         self.refresh_list()
 
     def create_new_category(self):
@@ -588,6 +614,7 @@ class LibraryWindow(QMainWindow):
         self.show_favorites_only = favorites_only
         self.all_btn.setChecked(not favorites_only)
         self.fav_btn.setChecked(favorites_only)
+        self.library_page = 1
         self.refresh_list()
 
     def toggle_theme(self, checked):
@@ -615,6 +642,23 @@ class LibraryWindow(QMainWindow):
             category_id=self.selected_category_id,
         )
 
+        # Pagination only makes sense for the non-alphabetical sorts (Title
+        # sort uses the A-Z index instead of pages).
+        is_paginated_sort = sort_by != "title"
+        self.per_page_combo.setEnabled(is_paginated_sort)
+        per_page = self._get_per_page() if is_paginated_sort else None
+
+        if per_page:
+            total_books = len(books)
+            total_pages = max(1, (total_books + per_page - 1) // per_page)
+            self.library_page = min(max(self.library_page, 1), total_pages)
+            start = (self.library_page - 1) * per_page
+            books = books[start:start + per_page]
+            self._update_pagination_controls(total_pages, total_books)
+            self.pagination_widget.setVisible(total_pages > 1)
+        else:
+            self.pagination_widget.hide()
+
         self.empty_label.setVisible(len(books) == 0)
         self.list_widget.setVisible(self.view_mode == "list" and len(books) > 0)
         self.grid_container.setVisible(self.view_mode == "grid" and len(books) > 0)
@@ -623,6 +667,30 @@ class LibraryWindow(QMainWindow):
             self._render_grid(books, sort_by)
         else:
             self._render_list(books)
+
+    def _reset_page_and_refresh(self):
+        self.library_page = 1
+        self.refresh_list()
+
+    def _get_per_page(self):
+        text = self.per_page_combo.currentText()
+        return None if text == "All" else int(text)
+
+    def _update_pagination_controls(self, total_pages, total_books):
+        self.prev_page_btn.setEnabled(self.library_page > 1)
+        self.next_page_btn.setEnabled(self.library_page < total_pages)
+        self.page_indicator_label.setText(
+            f"Page {self.library_page} of {total_pages} ({total_books} books)"
+        )
+
+    def _go_to_prev_page(self):
+        if self.library_page > 1:
+            self.library_page -= 1
+            self.refresh_list()
+
+    def _go_to_next_page(self):
+        self.library_page += 1  # refresh_list() clamps this to the valid range
+        self.refresh_list()
 
     # ------------- Search suggestions preview -------------
     def _update_search_suggestions(self, text):
@@ -714,7 +782,6 @@ class LibraryWindow(QMainWindow):
         self._letter_headers = {}
         is_alpha_sort = sort_by == "title"
         self.alpha_bar_top.setVisible(is_alpha_sort)
-        self.alpha_bar_bottom.setVisible(is_alpha_sort)
 
         if is_alpha_sort and books:
             groups = OrderedDict()
@@ -738,9 +805,7 @@ class LibraryWindow(QMainWindow):
 
     def _update_alpha_bars(self, active_letters):
         for letter in ALPHABET_INDEX:
-            active = letter in active_letters
-            self._alpha_buttons_top[letter].setEnabled(active)
-            self._alpha_buttons_bottom[letter].setEnabled(active)
+            self._alpha_buttons_top[letter].setEnabled(letter in active_letters)
 
     def _jump_to_letter(self, letter):
         header = self._letter_headers.get(letter)

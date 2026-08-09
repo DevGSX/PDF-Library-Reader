@@ -68,10 +68,17 @@ and a distraction-free "simple text" reading mode.
 - **Alphabetical grouping with a jump-to-letter bar** — in Image Preview,
   sorting by Title (A-Z or Z-A) groups covers under letter headers (A, B,
   C... with "#" for titles starting with a number or symbol), with a
-  clickable A-Z index strip pinned above *and* below the grid so you can
-  jump to any letter without scrolling back up first. Letters with matching
-  books are clickable; letters with nothing yet are grayed out. The bars
-  only appear while sorted alphabetically.
+  clickable A-Z index strip pinned above the grid so you can jump straight
+  to any letter. Letters with matching books are clickable; letters with
+  nothing yet are grayed out. The bar only appears while sorted
+  alphabetically.
+- **Pagination** — for the non-alphabetical sorts (Recently Read, Oldest
+  Read, File Size Largest/Smallest), a "Per page" dropdown next to the sort
+  box lets you split the list into pages of 10/25/50/100 instead of showing
+  everything at once, with Previous/Next navigation at the bottom. Defaults
+  to "All" (today's behavior); not available for Title sort, which uses the
+  A-Z index instead. The page resets to 1 whenever you change the search,
+  filters, sort, or category, so you never land on an empty page.
 - **Categories** — organize your library into your own custom categories,
   shown in a sidebar on the left with a live book count for each (and a
   star for ones you've favorited). Selecting **All Books (None)** shows
