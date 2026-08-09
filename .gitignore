@@ -1,0 +1,10 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment (created by install.sh)
+.venv/
+
+# Generated launcher script (created by install.sh, has your local path baked in)
+run.sh

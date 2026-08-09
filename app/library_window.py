@@ -50,6 +50,8 @@ STATUS_FILTER_OPTIONS = [
     ("Unread", "unread"),
 ]
 
+ALPHABET_INDEX = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["#"]
+
 
 def _group_letter(title):
     stripped = (title or "").strip()
@@ -70,6 +72,7 @@ class LibraryWindow(QMainWindow):
         self.view_mode = db.get_setting("library_view_mode", "list")  # "list" or "grid"
         self._search_dialog = None
         self._details_dialog = None
+        self._letter_headers = {}  # letter -> header QLabel, populated by _render_grid
 
         self._build_ui()
         self._apply_theme(self.db.get_setting("theme", "light"))
@@ -138,7 +141,7 @@ class LibraryWindow(QMainWindow):
         controls = QHBoxLayout()
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText(
-            "Filter by title, author, or series... (use \u201cSearch Text\u201d to search inside books)"
+            "Filter by title, author, series, or genre... (use \u201cSearch Text\u201d to search inside books)"
         )
         self.search_box.textChanged.connect(self.refresh_list)
         self.search_box.textChanged.connect(self._update_search_suggestions)
@@ -183,12 +186,40 @@ class LibraryWindow(QMainWindow):
         self.list_widget.setSpacing(4)
         layout.addWidget(self.list_widget)
 
-        # "Image Preview" view: a scrollable, wrapping grid of cover thumbnails,
-        # optionally grouped under a letter header when sorted alphabetically.
+        # "Image Preview" view: an alphabet index sidebar (only shown when sorted
+        # by title) next to a scrollable, wrapping grid of cover thumbnails,
+        # grouped under a letter header when alphabetically sorted.
+        self.grid_container = QWidget()
+        grid_row = QHBoxLayout(self.grid_container)
+        grid_row.setContentsMargins(0, 0, 0, 0)
+        grid_row.setSpacing(4)
+
+        self.alpha_sidebar = QWidget()
+        self.alpha_sidebar.setFixedWidth(26)
+        alpha_layout = QVBoxLayout(self.alpha_sidebar)
+        alpha_layout.setContentsMargins(0, 4, 0, 4)
+        alpha_layout.setSpacing(0)
+        self._alpha_buttons = {}
+        for letter in ALPHABET_INDEX:
+            btn = QPushButton(letter)
+            btn.setFlat(True)
+            btn.setFixedHeight(18)
+            btn.setToolTip(f"Jump to \u201c{letter}\u201d")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet("font-size: 10px; padding: 0px; border: none;")
+            btn.setEnabled(False)
+            btn.clicked.connect(lambda checked=False, l=letter: self._jump_to_letter(l))
+            alpha_layout.addWidget(btn)
+            self._alpha_buttons[letter] = btn
+        self.alpha_sidebar.hide()
+        grid_row.addWidget(self.alpha_sidebar)
+
         self.grid_scroll = QScrollArea()
         self.grid_scroll.setWidgetResizable(True)
         self.grid_scroll.setFrameShape(QScrollArea.NoFrame)
-        layout.addWidget(self.grid_scroll)
+        grid_row.addWidget(self.grid_scroll, stretch=1)
+
+        layout.addWidget(self.grid_container)
 
         self.empty_label = QLabel(
             'No books yet. Click "Add Book(s)" or "Add Folder" to build your library.'
@@ -268,7 +299,7 @@ class LibraryWindow(QMainWindow):
 
         self.empty_label.setVisible(len(books) == 0)
         self.list_widget.setVisible(self.view_mode == "list" and len(books) > 0)
-        self.grid_scroll.setVisible(self.view_mode == "grid" and len(books) > 0)
+        self.grid_container.setVisible(self.view_mode == "grid" and len(books) > 0)
 
         if self.view_mode == "grid":
             self._render_grid(books, sort_by)
@@ -284,7 +315,7 @@ class LibraryWindow(QMainWindow):
             return
 
         results = self.db.search_suggestions(text, limit=5)
-        if not (results["titles"] or results["authors"] or results["series"]):
+        if not (results["titles"] or results["authors"] or results["series"] or results["genres"]):
             self.suggestion_panel.hide()
             return
 
@@ -300,6 +331,11 @@ class LibraryWindow(QMainWindow):
         if results["series"]:
             self._add_suggestion_header("Series")
             for row in results["series"]:
+                label = f"{row['name']} ({row['count']} book{'s' if row['count'] != 1 else ''})"
+                self._add_suggestion_row(label, row["name"])
+        if results["genres"]:
+            self._add_suggestion_header("Genres")
+            for row in results["genres"]:
                 label = f"{row['name']} ({row['count']} book{'s' if row['count'] != 1 else ''})"
                 self._add_suggestion_row(label, row["name"])
 
@@ -351,7 +387,11 @@ class LibraryWindow(QMainWindow):
         outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(6)
 
-        if sort_by == "title" and books:
+        self._letter_headers = {}
+        is_alpha_sort = sort_by == "title"
+        self.alpha_sidebar.setVisible(is_alpha_sort)
+
+        if is_alpha_sort and books:
             groups = OrderedDict()
             for book in books:
                 groups.setdefault(_group_letter(book["title"]), []).append(book)
@@ -363,11 +403,22 @@ class LibraryWindow(QMainWindow):
                 )
                 outer.addWidget(header)
                 outer.addWidget(self._build_cover_group(group_books))
+                self._letter_headers[letter] = header
+            self._update_alpha_sidebar(set(groups.keys()))
         elif books:
             outer.addWidget(self._build_cover_group(books))
 
         outer.addStretch()
         self.grid_scroll.setWidget(content)
+
+    def _update_alpha_sidebar(self, active_letters):
+        for letter, btn in self._alpha_buttons.items():
+            btn.setEnabled(letter in active_letters)
+
+    def _jump_to_letter(self, letter):
+        header = self._letter_headers.get(letter)
+        if header is not None:
+            self.grid_scroll.verticalScrollBar().setValue(header.y())
 
     def _build_cover_group(self, books):
         group_widget = QWidget()

@@ -64,6 +64,11 @@ class ReaderWindow(QMainWindow):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self.render_page)
 
+        self._panning = False
+        self._pan_start_pos = None
+        self._pan_start_h = 0
+        self._pan_start_v = 0
+
         self._build_ui()
         self._build_bookmarks_dock()
         self.render_page()
@@ -185,8 +190,10 @@ class ReaderWindow(QMainWindow):
         self._update_mode_visibility()
 
         # Ctrl+scroll to zoom, plain scroll to turn pages (see eventFilter / _handle_wheel).
+        # Left-click-drag pans a zoomed-in page (see _handle_pan_*).
         self.scroll_area.viewport().installEventFilter(self)
         self.text_browser.viewport().installEventFilter(self)
+        self.page_label.installEventFilter(self)
 
     def _build_bookmarks_dock(self):
         dock = QDockWidget("Bookmarks", self)
@@ -246,6 +253,10 @@ class ReaderWindow(QMainWindow):
             fmt = QImage.Format_RGB888 if pix.n < 4 else QImage.Format_RGBA8888
             image = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt)
             self.page_label.setPixmap(QPixmap.fromImage(image.copy()))
+            # Deferred: the scroll area's scrollbar range isn't updated synchronously
+            # after setPixmap(), so evaluating "is this scrollable" has to wait for
+            # the pending layout pass to actually finish.
+            QTimer.singleShot(0, self._update_pan_cursor)
 
         self.page_spin.blockSignals(True)
         self.page_spin.setValue(self.current_page + 1)
@@ -273,6 +284,13 @@ class ReaderWindow(QMainWindow):
             self.text_browser.viewport(),
         ):
             return self._handle_wheel(event)
+        if obj is self.page_label:
+            if event.type() == QEvent.MouseButtonPress:
+                return self._handle_pan_press(event)
+            if event.type() == QEvent.MouseMove:
+                return self._handle_pan_move(event)
+            if event.type() == QEvent.MouseButtonRelease:
+                return self._handle_pan_release(event)
         return super().eventFilter(obj, event)
 
     def _handle_wheel(self, event):
@@ -308,6 +326,43 @@ class ReaderWindow(QMainWindow):
         else:
             self.next_page()
         return True
+
+    # ------------- Click-and-drag panning (zoomed-in pages) -------------
+    def _handle_pan_press(self, event):
+        if event.button() != Qt.LeftButton or self.simple_text_mode:
+            return False
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+        if hbar.maximum() <= hbar.minimum() and vbar.maximum() <= vbar.minimum():
+            return False  # page fits entirely -- nothing to pan
+        self._panning = True
+        self._pan_start_pos = event.globalPosition().toPoint()
+        self._pan_start_h = hbar.value()
+        self._pan_start_v = vbar.value()
+        self.page_label.setCursor(Qt.ClosedHandCursor)
+        return True
+
+    def _handle_pan_move(self, event):
+        if not self._panning:
+            return False
+        current = event.globalPosition().toPoint()
+        delta = current - self._pan_start_pos
+        self.scroll_area.horizontalScrollBar().setValue(self._pan_start_h - delta.x())
+        self.scroll_area.verticalScrollBar().setValue(self._pan_start_v - delta.y())
+        return True
+
+    def _handle_pan_release(self, event):
+        if event.button() != Qt.LeftButton or not self._panning:
+            return False
+        self._panning = False
+        self._update_pan_cursor()
+        return True
+
+    def _update_pan_cursor(self):
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+        scrollable = hbar.maximum() > hbar.minimum() or vbar.maximum() > vbar.minimum()
+        self.page_label.setCursor(Qt.OpenHandCursor if scrollable else Qt.ArrowCursor)
 
     def prev_page(self):
         if self.current_page > 0:

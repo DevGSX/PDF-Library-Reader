@@ -25,22 +25,23 @@ and a distraction-free "simple text" reading mode.
   click.
 - **Book details** — right-click a book (its row in Simple Text view, or its
   cover in Image Preview) and choose **Details** to open a preview panel
-  where you can edit Title, Author, Series, Language and a free-text
+  where you can edit Title, Author, Series, Genre, Language and a free-text
   Annotation, and set its reading status. Saving updates the library
   immediately. Kept off a plain click on purpose, so browsing your library
   doesn't keep popping the panel open.
-- **Filename stays in sync with Title / Author / Series** — saving details
-  renames the actual file on disk to `Title * Author * Series.pdf` (empty
-  parts are just dropped, e.g. `Title.pdf` if there's no author or series
-  yet). That way the metadata travels with the file itself — copy your
-  library folder to another device and the titles/authors/series are right
-  there in the filenames, no re-entering anything by hand. Illegal filename
-  characters are stripped automatically, and a name that would collide with
-  an existing file gets a "(2)" appended instead of overwriting it.
+- **Filename stays in sync with Title / Author / Series / Genre** — saving
+  details renames the actual file on disk to
+  `Title * Author * Series * Genre.pdf` (empty parts are just dropped, e.g.
+  `Title.pdf` if there's no author/series/genre yet). That way the metadata
+  travels with the file itself — copy your library folder to another device
+  and the titles/authors/series/genres are right there in the filenames, no
+  re-entering anything by hand. Illegal filename characters are stripped
+  automatically, and a name that would collide with an existing file gets a
+  "(2)" appended instead of overwriting it.
 - **Search suggestions** — start typing in the filter box and a preview
-  drops down grouping matches into **Titles**, **Authors**, and **Series**
-  (e.g. typing "herbert" shows "Frank Herbert (3 books)" under Authors).
-  Click any suggestion to jump straight to all matching books.
+  drops down grouping matches into **Titles**, **Authors**, **Series**, and
+  **Genres** (e.g. typing "herbert" shows "Frank Herbert (3 books)" under
+  Authors). Click any suggestion to jump straight to all matching books.
 - **Hover highlight** — hovering a book (its row in Simple Text view, or its
   cover in Image Preview) shows a light blue tint and outline around it.
 - **Favorites get a corner star** — a gold star badge appears in the
@@ -54,13 +55,21 @@ and a distraction-free "simple text" reading mode.
 - **Status filter** — a "Status" dropdown next to the filter box narrows the
   library to None (no filter), Currently Reading, Finished, or Unread —
   combinable with Favorites and the title filter.
-- **Alphabetical grouping** — in Image Preview, sorting by Title (A-Z or Z-A)
-  groups covers under letter headers (A, B, C... with "#" for titles starting
-  with a number or symbol), like a bookshelf sorted by author initial.
+- **Alphabetical grouping with a jump-to-letter sidebar** — in Image Preview,
+  sorting by Title (A-Z or Z-A) groups covers under letter headers (A, B,
+  C... with "#" for titles starting with a number or symbol) and shows an
+  A-Z index strip down the left edge. Letters with matching books are
+  clickable and jump straight to that section; letters with nothing yet are
+  grayed out. The sidebar only appears while sorted alphabetically.
 - **Bookmarks** — save a bookmark (with an optional label) on any page inside
   a book, jump back to it later, remove it when you're done.
 - **Text size** — A+ / A- controls zoom in normal view and font size in
   simple text mode. Your last setting is remembered.
+- **Click-and-drag panning** — when you've zoomed in past what fits the
+  window, left-click and drag the page to move around it, like a normal
+  image viewer. The cursor shows an open hand when a page can be panned, and
+  a closed hand while actively dragging. Disabled in Simple Text mode (there's
+  nothing to pan — text just wraps to fit).
 - **Fit to Screen** — on by default. Each page is automatically scaled to
   fill the window, recalculated per page, so pages of different sizes within
   the same book (tall, wide, mixed scans...) all display at a sensible size
@@ -124,19 +133,20 @@ deletes the underlying PDF file.
 | Ctrl + =       | Increase text size / zoom in  |
 | Ctrl + -       | Decrease text size / zoom out |
 | Ctrl + D       | Add a bookmark on this page   |
+| Click + drag   | Pan around a zoomed-in page   |
 
 ## Book details panel
 
 Right-click a book (its row, or its cover thumbnail) and choose **Details**
 to open the panel. From there you can:
-- Edit **Title**, **Author**, **Series**, **Language**, and a free-text
-  **Annotation** (your own notes about the book)
+- Edit **Title**, **Author**, **Series**, **Genre**, **Language**, and a
+  free-text **Annotation** (your own notes about the book)
 - Set its **Status** directly (Unread / Reading / Finished)
 - Toggle **Favorite**
 - Jump straight into **Open Book**
 
 Changes only take effect once you click **Save**. Saving also renames the
-file on disk to match Title/Author/Series (see above) — if that rename
+file on disk to match Title/Author/Series/Genre (see above) — if that rename
 fails for some reason (e.g. the file was moved externally), your details
 are still saved and you'll get a warning explaining the file itself
 couldn't be renamed.

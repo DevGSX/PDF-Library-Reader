@@ -66,6 +66,8 @@ class BookCard(QWidget):
             meta_bits.append(f"{book['page_count']} pages")
         if book.get("author"):
             meta_bits.append(book["author"])
+        if book.get("genre"):
+            meta_bits.append(book["genre"])
         if book.get("last_opened"):
             meta_bits.append(f"last read {book['last_opened'][:16].replace('T', ' ')}")
         else:
@@ -153,6 +155,10 @@ class CoverCell(QWidget):
         layout.addWidget(title_label)
 
         tooltip_bits = [book["title"], human_size(book.get("file_size", -1))]
+        if book.get("author"):
+            tooltip_bits.append(book["author"])
+        if book.get("genre"):
+            tooltip_bits.append(book["genre"])
         if book.get("is_favorite"):
             tooltip_bits.append("\u2605 Favorite")
         status = book.get("status") or "unread"

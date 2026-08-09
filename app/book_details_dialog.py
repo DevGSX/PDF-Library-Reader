@@ -59,6 +59,8 @@ class BookDetailsDialog(QDialog):
         self.title_edit = QLineEdit()
         self.author_edit = QLineEdit()
         self.series_edit = QLineEdit()
+        self.genre_edit = QLineEdit()
+        self.genre_edit.setPlaceholderText("e.g. Science Fiction, Mystery, Biography...")
         self.language_edit = QLineEdit()
         self.language_edit.setPlaceholderText("e.g. English, Spanish, French...")
         self.status_combo = QComboBox()
@@ -71,14 +73,15 @@ class BookDetailsDialog(QDialog):
         form.addRow("Title", self.title_edit)
         form.addRow("Author", self.author_edit)
         form.addRow("Series", self.series_edit)
+        form.addRow("Genre", self.genre_edit)
         form.addRow("Language", self.language_edit)
         form.addRow("Status", self.status_combo)
         form.addRow("Annotation", self.annotation_edit)
         layout.addLayout(form)
 
         hint = QLabel(
-            "Saving renames the file to \u201cTitle * Author * Series.pdf\u201d, so the "
-            "info travels with it if you move or copy it to another device."
+            "Saving renames the file to \u201cTitle * Author * Series * Genre.pdf\u201d, "
+            "so the info travels with it if you move or copy it to another device."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #999; font-size: 11px;")
@@ -132,6 +135,7 @@ class BookDetailsDialog(QDialog):
         self.title_edit.setText(book["title"] or "")
         self.author_edit.setText(book["author"] or "")
         self.series_edit.setText(book["series"] or "")
+        self.genre_edit.setText(book["genre"] or "")
         self.language_edit.setText(book["language"] or "")
         self.annotation_edit.setPlainText(book["annotation"] or "")
 
@@ -159,6 +163,7 @@ class BookDetailsDialog(QDialog):
                 title=self.title_edit.text().strip() or "Untitled",
                 author=self.author_edit.text().strip(),
                 series=self.series_edit.text().strip(),
+                genre=self.genre_edit.text().strip(),
                 language=self.language_edit.text().strip(),
                 annotation=self.annotation_edit.toPlainText().strip(),
             )

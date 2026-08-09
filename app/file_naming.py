@@ -1,6 +1,7 @@
-"""Keeps each book's filename in sync with its Title/Author/Series metadata,
-so the information travels with the file itself (e.g. when copying the whole
-library folder to another device) instead of only living in the database.
+"""Keeps each book's filename in sync with its Title/Author/Series/Genre
+metadata, so the information travels with the file itself (e.g. when copying
+the whole library folder to another device) instead of only living in the
+database.
 """
 import os
 import re
@@ -16,10 +17,10 @@ def _sanitize(text):
     return text
 
 
-def build_filename(title, author, series, ext):
-    """'Title * Author * Series.pdf' -- empty parts are dropped, e.g. a book
-    with no author/series just becomes 'Title.pdf'."""
-    parts = [p for p in (_sanitize(title), _sanitize(author), _sanitize(series)) if p]
+def build_filename(title, author, series, genre, ext):
+    """'Title * Author * Series * Genre.pdf' -- empty parts are dropped, e.g. a
+    book with no author/series/genre just becomes 'Title.pdf'."""
+    parts = [p for p in (_sanitize(title), _sanitize(author), _sanitize(series), _sanitize(genre)) if p]
     name = " * ".join(parts) if parts else "Untitled"
     if len(name) > MAX_NAME_LENGTH:
         name = name[:MAX_NAME_LENGTH].rstrip()
@@ -50,7 +51,7 @@ def sync_filename(db, book_id):
 
     directory = os.path.dirname(old_path)
     ext = os.path.splitext(old_path)[1]
-    desired_name = build_filename(book["title"], book["author"], book["series"], ext)
+    desired_name = build_filename(book["title"], book["author"], book["series"], book["genre"], ext)
     desired_path = os.path.join(directory, desired_name)
 
     if os.path.abspath(desired_path) == os.path.abspath(old_path):

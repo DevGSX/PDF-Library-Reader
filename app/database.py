@@ -60,6 +60,7 @@ class Database:
             "series": "TEXT DEFAULT ''",
             "annotation": "TEXT DEFAULT ''",
             "language": "TEXT DEFAULT ''",
+            "genre": "TEXT DEFAULT ''",
             "status": "TEXT DEFAULT 'unread'",  # 'unread' | 'reading' | 'finished'
         }
         for col, decl in new_columns.items():
@@ -97,8 +98,8 @@ class Database:
             clauses.append("status = ?")
             params.append(status)
         if search:
-            clauses.append("(title LIKE ? OR author LIKE ? OR series LIKE ?)")
-            params.extend([f"%{search}%"] * 3)
+            clauses.append("(title LIKE ? OR author LIKE ? OR series LIKE ? OR genre LIKE ?)")
+            params.extend([f"%{search}%"] * 4)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         cur = self.conn.execute(query, params)
@@ -137,12 +138,12 @@ class Database:
         self.conn.commit()
 
     def update_metadata(self, book_id, title=None, author=None, series=None,
-                         language=None, annotation=None):
+                         language=None, genre=None, annotation=None):
         """Update any subset of the editable metadata fields (None = leave unchanged)."""
         fields, params = [], []
         for column, value in (
             ("title", title), ("author", author), ("series", series),
-            ("language", language), ("annotation", annotation),
+            ("language", language), ("genre", genre), ("annotation", annotation),
         ):
             if value is not None:
                 fields.append(f"{column} = ?")
@@ -159,8 +160,8 @@ class Database:
 
     def search_suggestions(self, query, limit=5):
         """Categorized quick-search results for the live preview dropdown:
-        matching titles, plus distinct matching authors/series with book counts."""
-        empty = {"titles": [], "authors": [], "series": []}
+        matching titles, plus distinct matching authors/series/genres with book counts."""
+        empty = {"titles": [], "authors": [], "series": [], "genres": []}
         query = (query or "").strip()
         if not query:
             return empty
@@ -189,7 +190,15 @@ class Database:
         )
         series = [dict(r) for r in cur.fetchall()]
 
-        return {"titles": titles, "authors": authors, "series": series}
+        cur = self.conn.execute(
+            "SELECT genre AS name, COUNT(*) AS count FROM books "
+            "WHERE genre IS NOT NULL AND genre != '' AND genre LIKE ? "
+            "GROUP BY genre COLLATE NOCASE ORDER BY genre COLLATE NOCASE LIMIT ?",
+            (like, limit),
+        )
+        genres = [dict(r) for r in cur.fetchall()]
+
+        return {"titles": titles, "authors": authors, "series": series, "genres": genres}
 
     def set_status(self, book_id, status):
         if status not in ("unread", "reading", "finished"):
