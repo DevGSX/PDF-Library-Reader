@@ -5,6 +5,12 @@ from pathlib import Path
 from datetime import datetime
 
 
+def _split_multi_value(raw_value):
+    """Split a '_'-joined multi-value field ('Science Fiction_Fantasy',
+    'English_Bulgarian') into its individual, whitespace-trimmed tokens."""
+    return {t.strip() for t in (raw_value or "").split("_") if t.strip()}
+
+
 def get_data_dir() -> Path:
     """Where the library database lives (created on first run)."""
     data_dir = Path.home() / ".local" / "share" / "pdf-library-reader"
@@ -107,9 +113,11 @@ class Database:
         `category_id`, if given, restricts to books belonging to that category.
         `genres`, if given, restricts to books whose (possibly multi-value,
         "Science Fiction_Fantasy"-style) genre field CONTAINS any of the
-        listed values. `languages` works the same way for the (also possibly
-        multi-value, "English_Bulgarian"-style) language field -- either way,
-        a multi-value book matches if it has ANY of the values you're
+        listed values, matched as a whole token -- not a raw substring, so
+        filtering by "Fiction" won't also match "Science Fiction". `languages`
+        works the same way for the (also possibly multi-value,
+        "English_Bulgarian"-style) language field -- either way, a
+        multi-value book matches if it has ANY of the values you're
         filtering by, not all of them."""
         query = "SELECT books.* FROM books"
         clauses, params = [], []
@@ -122,12 +130,6 @@ class Database:
         if status:
             clauses.append("status = ?")
             params.append(status)
-        if genres:
-            clauses.append("(" + " OR ".join(["genre LIKE ?"] * len(genres)) + ")")
-            params.extend([f"%{g}%" for g in genres])
-        if languages:
-            clauses.append("(" + " OR ".join(["language LIKE ?"] * len(languages)) + ")")
-            params.extend([f"%{lang}%" for lang in languages])
         if search:
             clauses.append("(title LIKE ? OR author LIKE ? OR series LIKE ? OR genre LIKE ? OR language LIKE ?)")
             params.extend([f"%{search}%"] * 5)
@@ -135,6 +137,18 @@ class Database:
             query += " WHERE " + " AND ".join(clauses)
         cur = self.conn.execute(query, params)
         rows = [dict(r) for r in cur.fetchall()]
+
+        # Genre/Language filtering happens here in Python, not as a SQL LIKE
+        # clause -- a naive '%value%' substring check would incorrectly match
+        # "Fiction" against "Science Fiction". Splitting on '_' and checking
+        # for an exact token match avoids that false positive entirely (and
+        # sidesteps '_' also being SQL LIKE's own single-character wildcard).
+        if genres:
+            genre_set = set(genres)
+            rows = [r for r in rows if genre_set & _split_multi_value(r["genre"])]
+        if languages:
+            language_set = set(languages)
+            rows = [r for r in rows if language_set & _split_multi_value(r["language"])]
 
         for r in rows:
             try:
@@ -198,10 +212,7 @@ class Database:
         )
         tokens = set()
         for r in cur.fetchall():
-            for part in r["genre"].split("_"):
-                part = part.strip()
-                if part:
-                    tokens.add(part)
+            tokens |= _split_multi_value(r["genre"])
         return sorted(tokens, key=str.lower)
 
     def get_distinct_languages(self):
@@ -213,10 +224,7 @@ class Database:
         )
         tokens = set()
         for r in cur.fetchall():
-            for part in r["language"].split("_"):
-                part = part.strip()
-                if part:
-                    tokens.add(part)
+            tokens |= _split_multi_value(r["language"])
         return sorted(tokens, key=str.lower)
 
     def bulk_set_series(self, book_ids, value):

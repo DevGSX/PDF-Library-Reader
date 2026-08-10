@@ -25,7 +25,14 @@ class MultiSelectComboBox(QComboBox):
         self._model = QStandardItemModel(self)
         self.setModel(self._model)
         self.view().pressed.connect(self._on_item_pressed)
+        # Qt's own item delegate independently toggles the checkbox when a
+        # click lands precisely on its glyph, through an internal mechanism
+        # that never emits the 'pressed' signal above at all -- watching the
+        # model directly is the only reliable way to catch every toggle,
+        # regardless of which of the two mechanisms actually caused it.
+        self._model.dataChanged.connect(self._on_data_changed)
         self._skip_next_hide = False
+        self._suppress_signal = False  # True while WE'RE bulk-syncing state
 
     def eventFilter(self, obj, event):
         if obj is self.lineEdit():
@@ -58,13 +65,27 @@ class MultiSelectComboBox(QComboBox):
         return None
 
     def _on_item_pressed(self, index):
+        """Fires for a click landing anywhere in a row EXCEPT precisely on
+        the checkbox glyph -- a glyph click is handled entirely by Qt's own
+        delegate instead (see _on_data_changed), and never reaches this
+        signal at all, so there's no risk of canceling that out by also
+        toggling here."""
         item = self._model.itemFromIndex(index)
         if item is None:
             return
+        self._skip_next_hide = True  # keep the popup open for more picks
         item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
-        self._skip_next_hide = True  # keep the popup open for more picks -- set this
-        self._update_display_text()  # BEFORE emitting, in case a listener reacts
-        self.selection_changed.emit()  # reentrantly (e.g. rebuilds this combo's own model)
+
+    def _on_data_changed(self, top_left, bottom_right, roles):
+        """The single source of truth for reacting to a checkbox actually
+        toggling -- catches both our own manual toggle above (a click
+        anywhere in a row except the glyph) and Qt's own internal toggle (a
+        click landing precisely on the glyph), which never fires 'pressed'."""
+        if self._suppress_signal:
+            return
+        self._skip_next_hide = True  # also keep the popup open for a glyph click
+        self._update_display_text()
+        self.selection_changed.emit()
 
     def hidePopup(self):
         if self._skip_next_hide:
@@ -81,14 +102,18 @@ class MultiSelectComboBox(QComboBox):
 
     def set_checked_items(self, values):
         values_set = set(values)
+        self._suppress_signal = True
         for row in range(self._model.rowCount()):
             item = self._model.item(row)
             item.setCheckState(Qt.Checked if item.text() in values_set else Qt.Unchecked)
+        self._suppress_signal = False
         self._update_display_text()
 
     def clear_selection(self):
+        self._suppress_signal = True
         for row in range(self._model.rowCount()):
             self._model.item(row).setCheckState(Qt.Unchecked)
+        self._suppress_signal = False
         self._update_display_text()
 
     def clear_items(self):
