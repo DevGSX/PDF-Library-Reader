@@ -29,8 +29,10 @@ from .add_to_category_dialog import AddToCategoryDialog
 from .badges import decorate_thumbnail
 from .book_details_dialog import BookDetailsDialog
 from .database import Database
-from .file_naming import parse_filename
+from .file_naming import parse_filename, sync_filename
 from .flow_layout import FlowLayout
+from .multi_select_combo import MultiSelectComboBox
+from .presets import GENRE_PRESETS, LANGUAGE_PRESETS
 from .reader_window import ReaderWindow
 from .search_dialog import TextSearchDialog
 from .themes import DARK_THEME, LIGHT_THEME
@@ -84,6 +86,9 @@ class LibraryWindow(QMainWindow):
         self.select_mode = False  # while off, clicking a book does nothing (prevents accidental selection)
         self.library_page = 1  # current page when paginating (applies to every sort mode)
         self._letter_page_map = {}  # letter -> page number, for cross-page A-Z jumps
+        self.genre_lang_filter_mode = False  # when on, replaces the A-Z bar with genre/language filters
+        self.selected_genres = set()
+        self.selected_languages = set()
 
         self._build_ui()
         self._apply_theme(self.db.get_setting("theme", "light"))
@@ -143,6 +148,16 @@ class LibraryWindow(QMainWindow):
         )
         self.select_mode_btn.clicked.connect(self.toggle_select_mode)
         toolbar.addWidget(self.select_mode_btn)
+
+        toolbar.addSeparator()
+
+        self.genre_lang_filter_btn = QPushButton("Genres && Languages")
+        self.genre_lang_filter_btn.setCheckable(True)
+        self.genre_lang_filter_btn.setToolTip(
+            "Replace the A-Z index with a Genre/Language filter bar (Image Preview)"
+        )
+        self.genre_lang_filter_btn.clicked.connect(self.toggle_genre_lang_filter_mode)
+        toolbar.addWidget(self.genre_lang_filter_btn)
 
         toolbar.addSeparator()
 
@@ -253,6 +268,10 @@ class LibraryWindow(QMainWindow):
         self.alpha_bar_top.hide()
         grid_col.addWidget(self.alpha_bar_top)
 
+        self.genre_lang_bar = self._build_genre_lang_bar()
+        self.genre_lang_bar.hide()
+        grid_col.addWidget(self.genre_lang_bar)
+
         self.grid_scroll = QScrollArea()
         self.grid_scroll.setWidgetResizable(True)
         self.grid_scroll.setFrameShape(QScrollArea.NoFrame)
@@ -342,6 +361,97 @@ class LibraryWindow(QMainWindow):
             bar_layout.addWidget(btn)
             buttons[letter] = btn
         return bar, buttons
+
+    # ------------- Genre / Language filter bar (replaces the A-Z bar) -------------
+    def _build_genre_lang_bar(self):
+        bar = QWidget()
+        bar_layout = QVBoxLayout(bar)
+        bar_layout.setContentsMargins(2, 2, 2, 2)
+        bar_layout.setSpacing(4)
+
+        genre_row = QHBoxLayout()
+        genre_row.addWidget(QLabel("Genre:"))
+        self.genre_filter_combo = MultiSelectComboBox()
+        self.genre_filter_combo.setToolTip(
+            "Select one or more genres -- matches are OR'd together"
+        )
+        self.genre_filter_combo.selection_changed.connect(self._on_genre_filter_changed)
+        genre_row.addWidget(self.genre_filter_combo, stretch=1)
+        bar_layout.addLayout(genre_row)
+
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel("Language:"))
+        self.language_filter_combo = MultiSelectComboBox()
+        self.language_filter_combo.setToolTip(
+            "Select one or more languages -- a multi-language book matches if "
+            "it has ANY of the languages you pick"
+        )
+        self.language_filter_combo.selection_changed.connect(self._on_language_filter_changed)
+        lang_row.addWidget(self.language_filter_combo, stretch=1)
+
+        clear_btn = QPushButton("Clear Filters")
+        clear_btn.setToolTip("Deselect every genre and language filter")
+        clear_btn.clicked.connect(self._clear_genre_lang_filters)
+        lang_row.addWidget(clear_btn)
+        bar_layout.addLayout(lang_row)
+
+        return bar
+
+    def _refresh_genre_lang_bar_contents(self):
+        """Rebuild the genre/language dropdown items from the current preset
+        lists plus any custom values actually in use, so newly-added custom
+        genres/languages show up as filter options too. Checked state (from
+        self.selected_genres/languages) is preserved across rebuilds. Every
+        item stays selectable regardless of current match count -- disabling
+        an item you've already checked would leave you unable to uncheck it
+        again once its filtered result count drops to zero."""
+        used_genres = set(self.db.get_distinct_genres())
+        all_genres = list(GENRE_PRESETS) + sorted(
+            (g for g in used_genres if g not in GENRE_PRESETS), key=str.lower
+        )
+        self.genre_filter_combo.blockSignals(True)
+        self.genre_filter_combo.clear_items()
+        self.genre_filter_combo.add_items(all_genres)
+        self.genre_filter_combo.set_checked_items(self.selected_genres)
+        self.genre_filter_combo.blockSignals(False)
+
+        used_languages = set(self.db.get_distinct_languages())
+        all_languages = list(LANGUAGE_PRESETS) + sorted(
+            (l for l in used_languages if l not in LANGUAGE_PRESETS), key=str.lower
+        )
+        self.language_filter_combo.blockSignals(True)
+        self.language_filter_combo.clear_items()
+        self.language_filter_combo.add_items(all_languages)
+        self.language_filter_combo.set_checked_items(self.selected_languages)
+        self.language_filter_combo.blockSignals(False)
+
+    def _on_genre_filter_changed(self):
+        self.selected_genres = set(self.genre_filter_combo.checked_items())
+        # Deferred: this fires synchronously from within the combo's own
+        # item-press handler (while its popup is still open), and refreshing
+        # rebuilds that same combo's model -- doing that immediately corrupts
+        # the popup mid-interaction and can close it early. Let the click
+        # finish first.
+        QTimer.singleShot(0, self._reset_page_and_refresh)
+
+    def _on_language_filter_changed(self):
+        self.selected_languages = set(self.language_filter_combo.checked_items())
+        QTimer.singleShot(0, self._reset_page_and_refresh)  # see _on_genre_filter_changed
+
+    def _clear_genre_lang_filters(self):
+        self.selected_genres.clear()
+        self.selected_languages.clear()
+        self._reset_page_and_refresh()
+
+    def toggle_genre_lang_filter_mode(self, checked):
+        self.genre_lang_filter_btn.setChecked(checked)
+        self.genre_lang_filter_mode = checked
+        if not checked:
+            # Leaving the mode clears the filters too, so there's no
+            # invisible active filter left behind once the bar disappears.
+            self.selected_genres.clear()
+            self.selected_languages.clear()
+        self.refresh_list()
 
     def _build_category_sidebar(self):
         sidebar = QWidget()
@@ -557,6 +667,9 @@ class LibraryWindow(QMainWindow):
         add_menu = menu.addMenu("Add to Category")
         # Single-book action: don't touch any unrelated active multi-selection.
         self._populate_category_menu(add_menu, [book_id], clear_selection_after=False)
+        menu.addAction("Set Series...").triggered.connect(lambda: self._set_series_for_books([book_id]))
+        menu.addAction("Set Genre...").triggered.connect(lambda: self._set_genre_for_books([book_id]))
+        menu.addAction("Set Language...").triggered.connect(lambda: self._set_language_for_books([book_id]))
         menu.addAction("Remove from Library").triggered.connect(lambda: self.remove_book(book_id))
         menu.exec(global_pos)
 
@@ -566,6 +679,15 @@ class LibraryWindow(QMainWindow):
         add_menu = menu.addMenu(f"Add {n} Selected to Category")
         # Bulk action: the selection has now been "used", so clear it once done.
         self._populate_category_menu(add_menu, list(book_ids), clear_selection_after=True)
+        menu.addAction(f"Set Series for {n} Selected...").triggered.connect(
+            lambda: self._set_series_for_books(list(book_ids), clear_selection_after=True)
+        )
+        menu.addAction(f"Set Genre for {n} Selected...").triggered.connect(
+            lambda: self._set_genre_for_books(list(book_ids), clear_selection_after=True)
+        )
+        menu.addAction(f"Set Language for {n} Selected...").triggered.connect(
+            lambda: self._set_language_for_books(list(book_ids), clear_selection_after=True)
+        )
         menu.addAction(f"Remove {n} Selected from Library").triggered.connect(
             lambda: self._bulk_remove_books(list(book_ids))
         )
@@ -605,6 +727,68 @@ class LibraryWindow(QMainWindow):
             self.refresh_categories_sidebar()
             if clear_selection_after:
                 self.clear_selection()
+
+    # ------------- Quick-set Series / Genre / Language for selected books -------------
+    def _set_series_for_books(self, book_ids, clear_selection_after=False):
+        existing = sorted(
+            {b["series"] for b in self.db.get_books() if b.get("series")}, key=str.lower
+        )
+        items = existing or [""]
+        start_index = 0
+        if len(book_ids) == 1:
+            current = (self.db.get_book(book_ids[0]) or {"series": ""})["series"] or ""
+            if current in items:
+                start_index = items.index(current)
+        value, ok = QInputDialog.getItem(
+            self, "Set Series", "Series:", items, start_index, editable=True
+        )
+        if not ok:
+            return
+        self._apply_bulk_field(book_ids, self.db.bulk_set_series, value.strip(), clear_selection_after)
+
+    def _set_genre_for_books(self, book_ids, clear_selection_after=False):
+        items = list(GENRE_PRESETS)
+        start_index = 0
+        if len(book_ids) == 1:
+            current = (self.db.get_book(book_ids[0]) or {"genre": ""})["genre"] or ""
+            if current in items:
+                start_index = items.index(current)
+            elif current:
+                items = [current] + items
+        value, ok = QInputDialog.getItem(
+            self, "Set Genre",
+            "Genre (use ; for more than one, e.g. Science Fiction;Fantasy):",
+            items, start_index, editable=True,
+        )
+        if not ok:
+            return
+        self._apply_bulk_field(book_ids, self.db.bulk_set_genre, value.strip(), clear_selection_after)
+
+    def _set_language_for_books(self, book_ids, clear_selection_after=False):
+        items = list(LANGUAGE_PRESETS)
+        start_index = 0
+        if len(book_ids) == 1:
+            current = (self.db.get_book(book_ids[0]) or {"language": ""})["language"] or ""
+            if current in items:
+                start_index = items.index(current)
+            elif current:
+                items = [current] + items
+        value, ok = QInputDialog.getItem(
+            self, "Set Language",
+            "Language (use ; for more than one, e.g. English;Bulgarian):",
+            items, start_index, editable=True,
+        )
+        if not ok:
+            return
+        self._apply_bulk_field(book_ids, self.db.bulk_set_language, value.strip(), clear_selection_after)
+
+    def _apply_bulk_field(self, book_ids, db_setter, value, clear_selection_after):
+        db_setter(book_ids, value)
+        for book_id in book_ids:
+            sync_filename(self.db, book_id)
+        if clear_selection_after:
+            self.clear_selection()
+        self.refresh_list()
 
     def _bulk_remove_books(self, book_ids):
         reply = QMessageBox.question(
@@ -706,7 +890,12 @@ class LibraryWindow(QMainWindow):
             descending=descending,
             status=status_filter,
             category_id=self.selected_category_id,
+            genres=list(self.selected_genres) if self.selected_genres else None,
+            languages=list(self.selected_languages) if self.selected_languages else None,
         )
+
+        if self.genre_lang_filter_mode:
+            self._refresh_genre_lang_bar_contents()
 
         # Pagination now applies to every sort mode, including Title -- large
         # libraries could otherwise render everything at once and hurt
@@ -728,9 +917,23 @@ class LibraryWindow(QMainWindow):
             books = all_books
             self.pagination_widget.hide()
 
-        self.empty_label.setVisible(len(books) == 0)
-        self.list_widget.setVisible(self.view_mode == "list" and len(books) > 0)
-        self.grid_container.setVisible(self.view_mode == "grid" and len(books) > 0)
+        # Visible whenever we're in that view mode, regardless of whether the
+        # current filters happen to match zero books -- the grid container
+        # also holds the A-Z / Genre-Language filter bars, and hiding it on
+        # zero results would hide those controls too, making a "no matches"
+        # filter impossible to see or adjust.
+        if len(books) == 0:
+            if self.db.get_books():
+                self.empty_label.setText("No books match the current filters.")
+            else:
+                self.empty_label.setText(
+                    'No books yet. Click "Add Book(s)" or "Add Folder" to build your library.'
+                )
+            self.empty_label.show()
+        else:
+            self.empty_label.hide()
+        self.list_widget.setVisible(self.view_mode == "list")
+        self.grid_container.setVisible(self.view_mode == "grid")
 
         if self.view_mode == "grid":
             self._render_grid(books, sort_by)
@@ -863,7 +1066,10 @@ class LibraryWindow(QMainWindow):
 
         self._letter_headers = {}
         is_alpha_sort = sort_by == "title"
-        self.alpha_bar_top.setVisible(is_alpha_sort)
+        # The two bars are mutually exclusive -- Genre/Language filter mode
+        # always takes over that space, regardless of sort.
+        self.alpha_bar_top.setVisible(is_alpha_sort and not self.genre_lang_filter_mode)
+        self.genre_lang_bar.setVisible(self.genre_lang_filter_mode)
 
         if is_alpha_sort:
             # Enabled letters reflect the FULL filtered set (every page), not

@@ -39,15 +39,18 @@ and a distraction-free "simple text" reading mode.
   Annotation, and set its reading status. Saving updates the library
   immediately. Kept off a plain click on purpose, so browsing your library
   doesn't keep popping the panel open.
-- **Filename stays in sync with Title / Author / Series / Genre** — saving
-  details renames the actual file on disk to
-  `Title * Author * Series * Genre.pdf` (empty parts are just dropped, e.g.
-  `Title.pdf` if there's no author/series/genre yet). That way the metadata
-  travels with the file itself — copy your library folder to another device
-  and the titles/authors/series/genres are right there in the filenames, no
-  re-entering anything by hand. Illegal filename characters are stripped
-  automatically, and a name that would collide with an existing file gets a
-  "(2)" appended instead of overwriting it.
+- **Filename stays in sync with Title / Author / Series / Genre / Language**
+  — saving details renames the actual file on disk to
+  `Title * Author * Series * Genre * Language.pdf` (empty parts are just
+  dropped, e.g. `Title.pdf` if nothing else is set yet). A book with more
+  than one genre or language shows up as e.g. "Science Fiction;Fantasy" or
+  "English;Bulgarian" right in the filename, and is found when filtering or
+  searching for any one of them on its own. That way the metadata travels
+  with the file itself — copy your library folder to another device and
+  it's all right there in the filenames, no re-entering anything by hand.
+  Illegal filename characters are stripped automatically, and a name that
+  would collide with an existing file gets a "(2)" appended instead of
+  overwriting it.
 - **Search suggestions** — start typing in the filter box and a preview
   drops down grouping matches into **Titles**, **Authors**, **Series**, and
   **Genres** (e.g. typing "herbert" shows "Frank Herbert (3 books)" under
@@ -71,7 +74,23 @@ and a distraction-free "simple text" reading mode.
   clickable A-Z index strip pinned above the grid so you can jump straight
   to any letter. Letters with matching books are clickable; letters with
   nothing yet are grayed out. The bar only appears while sorted
-  alphabetically.
+  alphabetically, and is replaced by the Genre/Language filter bar (below)
+  whenever that's turned on.
+- **Genre / Language filtering** — turn on **Genres & Languages** in the
+  toolbar to swap the A-Z bar for a filter bar: a **Genre** dropdown and a
+  **Language** dropdown, each letting you check any number of options at
+  once (matches are OR'd together) — the popup stays open across clicks so
+  you can pick several without reopening it, and it works the same way even
+  if a pick happens to match zero books, so you can freely adjust your
+  filter without the menu closing or the bar disappearing. A book with more
+  than one genre or language (e.g. "English;Bulgarian") matches if it has
+  *any* of the values you've selected. Genre and Language filters combine
+  with each other (AND) and with everything else — search, status,
+  category. **Clear Filters** deselects everything at once; turning the
+  toggle off does the same and brings the A-Z bar back. Both dropdowns come
+  with a comprehensive preset list (40+ genres, 35+ languages) so there's a
+  consistent vocabulary to filter by, but any custom value you've typed in
+  Book Details shows up as a filter option too.
 - **Pagination** — a "Per page" dropdown next to the sort box lets you split
   the list into pages of 10/25/50/100 instead of showing everything at once,
   with Previous/Next navigation at the bottom — works for every sort mode,
@@ -102,10 +121,11 @@ and a distraction-free "simple text" reading mode.
   - **Click empty space** clears the whole selection
 
   While selected, right-click any selected book to add the whole selection
-  to a category, or remove them all from the library at once — works in
-  both Simple Text and Image Preview. The selection automatically clears
-  itself once you've added the books to a category, so it's ready for the
-  next thing without an extra click.
+  to a category, **set the Series/Genre/Language** for every selected book
+  at once (a quick way to tag a batch of books in one go), or remove them
+  all from the library at once — works in both Simple Text and Image
+  Preview. The selection automatically clears itself once you commit an
+  action like this, so it's ready for the next thing without an extra click.
 - **Bookmarks** — save a bookmark (with an optional label) on any page inside
   a book, jump back to it later, remove it when you're done. The panel has
   its own "Bookmarks" toggle button next to "+ Bookmark" in the toolbar, so
@@ -196,16 +216,22 @@ deletes the underlying PDF file.
 
 Right-click a book (its row, or its cover thumbnail) and choose **Details**
 to open the panel. From there you can:
-- Edit **Title**, **Author**, **Series**, **Genre**, **Language**, and a
-  free-text **Annotation** (your own notes about the book)
+- Edit **Title**, **Author**, **Series**, and a free-text **Annotation**
+  (your own notes about the book)
+- Pick one or more **Genres** from the dropdown (check as many as apply —
+  the box shows a summary like "Science Fiction, Fantasy" when closed),
+  plus check **Custom** to add one more genre that isn't in the list
+- Pick one or more **Languages** the same way (check as many as apply —
+  shows e.g. "English, Bulgarian" when closed), plus check **Custom** to
+  add one more language that isn't in the list
 - Set its **Status** directly (Unread / Reading / Finished)
 - Toggle **Favorite**
 - Jump straight into **Open Book**
 
 Changes only take effect once you click **Save**. Saving also renames the
-file on disk to match Title/Author/Series/Genre (see above) — if that rename
-fails for some reason (e.g. the file was moved externally), your details
-are still saved and you'll get a warning explaining the file itself
+file on disk to match Title/Author/Series/Genre/Language (see above) — if
+that rename fails for some reason (e.g. the file was moved externally), your
+details are still saved and you'll get a warning explaining the file itself
 couldn't be renamed.
 
 ## Notes / limitations

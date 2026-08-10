@@ -1,7 +1,12 @@
-"""Keeps each book's filename in sync with its Title/Author/Series/Genre
-metadata, so the information travels with the file itself (e.g. when copying
-the whole library folder to another device) instead of only living in the
-database.
+"""Keeps each book's filename in sync with its Title/Author/Series/Genre/
+Language metadata, so the information travels with the file itself (e.g.
+when copying the whole library folder to another device) instead of only
+living in the database.
+
+Genre and Language can each hold more than one value, separated by ';'
+(e.g. "English;Bulgarian", "Science Fiction;Fantasy") -- unlike '/', a
+semicolon is a perfectly ordinary character on every filesystem, so it
+needs no special handling to show up correctly in an actual filename.
 """
 import os
 import re
@@ -17,10 +22,17 @@ def _sanitize(text):
     return text
 
 
-def build_filename(title, author, series, genre, ext):
-    """'Title * Author * Series * Genre.pdf' -- empty parts are dropped, e.g. a
-    book with no author/series/genre just becomes 'Title.pdf'."""
-    parts = [p for p in (_sanitize(title), _sanitize(author), _sanitize(series), _sanitize(genre)) if p]
+def build_filename(title, author, series, genre, language, ext):
+    """'Title * Author * Series * Genre * Language.pdf' -- empty parts are
+    dropped, e.g. a book with nothing but a title just becomes 'Title.pdf'.
+    A book with more than one genre or language renders as such directly,
+    e.g. "English;Bulgarian" or "Science Fiction;Fantasy"."""
+    parts = [
+        p for p in (
+            _sanitize(title), _sanitize(author), _sanitize(series),
+            _sanitize(genre), _sanitize(language),
+        ) if p
+    ]
     name = " * ".join(parts) if parts else "Untitled"
     if len(name) > MAX_NAME_LENGTH:
         name = name[:MAX_NAME_LENGTH].rstrip()
@@ -29,10 +41,10 @@ def build_filename(title, author, series, genre, ext):
 
 def parse_filename(filename):
     """Inverse of build_filename(): given a filename (with or without its
-    extension) split on ' * ' into title/author/series/genre. Title always
-    ends up populated (falling back to the whole filename, or 'Untitled' if
-    even that is empty); the rest default to '' when not present. Extra
-    segments beyond four are ignored.
+    extension) split on ' * ' into title/author/series/genre/language. Title
+    always ends up populated (falling back to the whole filename, or
+    'Untitled' if even that is empty); the rest default to '' when not
+    present. Extra segments beyond five are ignored.
 
     This only round-trips exactly for filenames this app generated -- if a
     field was left blank when the file was named, later fields shift up by
@@ -44,8 +56,8 @@ def parse_filename(filename):
     parts = [p.strip() for p in name.split(" * ")]
     parts = [p for p in parts if p]
     if not parts:
-        return {"title": "Untitled", "author": "", "series": "", "genre": ""}
-    keys = ["title", "author", "series", "genre"]
+        return {"title": "Untitled", "author": "", "series": "", "genre": "", "language": ""}
+    keys = ["title", "author", "series", "genre", "language"]
     result = {k: "" for k in keys}
     for key, value in zip(keys, parts):
         result[key] = value
@@ -63,9 +75,9 @@ def _unique_path(directory, filename):
 
 
 def sync_filename(db, book_id):
-    """Rename the book's file on disk to match its current Title/Author/Series,
-    if it doesn't already match. Returns (renamed: bool, info: str | None) --
-    info is the new path on success, or an error message on failure."""
+    """Rename the book's file on disk to match its current metadata, if it
+    doesn't already match. Returns (renamed: bool, info: str | None) -- info
+    is the new path on success, or an error message on failure."""
     book = db.get_book(book_id)
     if not book:
         return False, None
@@ -76,7 +88,9 @@ def sync_filename(db, book_id):
 
     directory = os.path.dirname(old_path)
     ext = os.path.splitext(old_path)[1]
-    desired_name = build_filename(book["title"], book["author"], book["series"], book["genre"], ext)
+    desired_name = build_filename(
+        book["title"], book["author"], book["series"], book["genre"], book["language"], ext
+    )
     desired_path = os.path.join(directory, desired_name)
 
     if os.path.abspath(desired_path) == os.path.abspath(old_path):

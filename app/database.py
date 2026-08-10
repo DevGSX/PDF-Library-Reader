@@ -101,10 +101,16 @@ class Database:
         return cur.fetchone()
 
     def get_books(self, favorites_only=False, search=None, sort_by="title", descending=False,
-                  status=None, category_id=None):
+                  status=None, category_id=None, genres=None, languages=None):
         """Return library entries as plain dicts, each carrying a live file_size.
         `status`, if given, restricts to one of 'unread' | 'reading' | 'finished'.
-        `category_id`, if given, restricts to books belonging to that category."""
+        `category_id`, if given, restricts to books belonging to that category.
+        `genres`, if given, restricts to books whose (possibly multi-value,
+        "Science Fiction;Fantasy"-style) genre field CONTAINS any of the
+        listed values. `languages` works the same way for the (also possibly
+        multi-value, "English;Bulgarian"-style) language field -- either way,
+        a multi-value book matches if it has ANY of the values you're
+        filtering by, not all of them."""
         query = "SELECT books.* FROM books"
         clauses, params = [], []
         if category_id is not None:
@@ -116,9 +122,15 @@ class Database:
         if status:
             clauses.append("status = ?")
             params.append(status)
+        if genres:
+            clauses.append("(" + " OR ".join(["genre LIKE ?"] * len(genres)) + ")")
+            params.extend([f"%{g}%" for g in genres])
+        if languages:
+            clauses.append("(" + " OR ".join(["language LIKE ?"] * len(languages)) + ")")
+            params.extend([f"%{lang}%" for lang in languages])
         if search:
-            clauses.append("(title LIKE ? OR author LIKE ? OR series LIKE ? OR genre LIKE ?)")
-            params.extend([f"%{search}%"] * 4)
+            clauses.append("(title LIKE ? OR author LIKE ? OR series LIKE ? OR genre LIKE ? OR language LIKE ?)")
+            params.extend([f"%{search}%"] * 5)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         cur = self.conn.execute(query, params)
@@ -177,10 +189,68 @@ class Database:
         self.conn.execute("UPDATE books SET filepath = ? WHERE id = ?", (new_filepath, book_id))
         self.conn.commit()
 
+    def get_distinct_genres(self):
+        """Individual genre tokens in use, splitting any multi-value
+        ('Science Fiction;Fantasy') entries into their separate parts, so
+        each genre is offered as its own filterable option."""
+        cur = self.conn.execute(
+            "SELECT DISTINCT genre FROM books WHERE genre IS NOT NULL AND genre != ''"
+        )
+        tokens = set()
+        for r in cur.fetchall():
+            for part in r["genre"].split(";"):
+                part = part.strip()
+                if part:
+                    tokens.add(part)
+        return sorted(tokens, key=str.lower)
+
+    def get_distinct_languages(self):
+        """Individual language tokens in use, splitting any multi-value
+        ('English;Bulgarian') entries into their separate parts, so each
+        language is offered as its own filterable option."""
+        cur = self.conn.execute(
+            "SELECT DISTINCT language FROM books WHERE language IS NOT NULL AND language != ''"
+        )
+        tokens = set()
+        for r in cur.fetchall():
+            for part in r["language"].split(";"):
+                part = part.strip()
+                if part:
+                    tokens.add(part)
+        return sorted(tokens, key=str.lower)
+
+    def bulk_set_series(self, book_ids, value):
+        book_ids = list(book_ids)
+        if not book_ids:
+            return
+        self.conn.executemany(
+            "UPDATE books SET series = ? WHERE id = ?", [(value, bid) for bid in book_ids]
+        )
+        self.conn.commit()
+
+    def bulk_set_genre(self, book_ids, value):
+        book_ids = list(book_ids)
+        if not book_ids:
+            return
+        self.conn.executemany(
+            "UPDATE books SET genre = ? WHERE id = ?", [(value, bid) for bid in book_ids]
+        )
+        self.conn.commit()
+
+    def bulk_set_language(self, book_ids, value):
+        book_ids = list(book_ids)
+        if not book_ids:
+            return
+        self.conn.executemany(
+            "UPDATE books SET language = ? WHERE id = ?", [(value, bid) for bid in book_ids]
+        )
+        self.conn.commit()
+
     def search_suggestions(self, query, limit=5):
         """Categorized quick-search results for the live preview dropdown:
-        matching titles, plus distinct matching authors/series/genres with book counts."""
-        empty = {"titles": [], "authors": [], "series": [], "genres": []}
+        matching titles, plus distinct matching authors/series/genres/languages
+        with book counts."""
+        empty = {"titles": [], "authors": [], "series": [], "genres": [], "languages": []}
         query = (query or "").strip()
         if not query:
             return empty
@@ -217,7 +287,15 @@ class Database:
         )
         genres = [dict(r) for r in cur.fetchall()]
 
-        return {"titles": titles, "authors": authors, "series": series, "genres": genres}
+        cur = self.conn.execute(
+            "SELECT language AS name, COUNT(*) AS count FROM books "
+            "WHERE language IS NOT NULL AND language != '' AND language LIKE ? "
+            "GROUP BY language COLLATE NOCASE ORDER BY language COLLATE NOCASE LIMIT ?",
+            (like, limit),
+        )
+        languages = [dict(r) for r in cur.fetchall()]
+
+        return {"titles": titles, "authors": authors, "series": series, "genres": genres, "languages": languages}
 
     def set_status(self, book_id, status):
         if status not in ("unread", "reading", "finished"):
