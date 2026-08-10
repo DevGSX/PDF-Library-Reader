@@ -3,7 +3,7 @@ one -- the popup stays open across clicks so you can check several items in
 one go, and the closed box shows a comma-joined summary of what's checked.
 Used for Language, since a book can have more than one.
 """
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QComboBox
 
@@ -16,10 +16,22 @@ class MultiSelectComboBox(QComboBox):
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
         self.lineEdit().setPlaceholderText("(none selected)")
+        # An editable combo's line-edit area only opens the popup via the
+        # dropdown arrow by default -- clicking the text/box itself just
+        # tries to place a text cursor. Since the line edit is read-only
+        # anyway (it's just a display summary, not something to type in),
+        # intercept clicks on it and open the popup instead.
+        self.lineEdit().installEventFilter(self)
         self._model = QStandardItemModel(self)
         self.setModel(self._model)
         self.view().pressed.connect(self._on_item_pressed)
         self._skip_next_hide = False
+
+    def eventFilter(self, obj, event):
+        if obj is self.lineEdit() and event.type() == QEvent.MouseButtonPress:
+            self.showPopup()
+            return True
+        return super().eventFilter(obj, event)
 
     def add_items(self, items):
         for text in items:

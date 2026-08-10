@@ -9,15 +9,26 @@ and a distraction-free "simple text" reading mode.
 - **Library / main menu** — every PDF you add, shown with title, file size,
   page count and last-read date.
 - **Title comes from the filename, not the PDF's internal metadata** — when
-  you add a book, its Title (and Author/Series/Genre, if present) are read
-  from the filename itself, e.g. adding a file named
-  `Dune * Frank Herbert * Dune Saga * Science Fiction.pdf` fills in all four
-  fields automatically. A plain filename with no `*` separators is used as
-  the title as-is. Either way, the PDF's own embedded metadata is ignored,
-  since it's often unreliable — many tools stamp it with whatever the
-  document's first heading happened to be, not the actual book title.
+  you add a book, its Title (and Author/Series/Genre/Language, if present)
+  are read from the filename itself, e.g. adding a file named
+  `Dune - Frank Herbert - Dune Saga - Science Fiction.pdf` fills in all
+  four fields automatically. A plain filename with no `-` separators is used
+  as the title as-is. Either way, the PDF's own embedded metadata is
+  ignored, since it's often unreliable — many tools stamp it with whatever
+  the document's first heading happened to be, not the actual book title.
   Re-scanning a folder you've already added never overwrites metadata you
   edited by hand.
+- **Refresh (F5)** — click **Refresh** in the toolbar, or just press **F5**,
+  to re-check the library against what's actually on disk. This also runs
+  automatically every time you start the app. Any book whose file was
+  renamed or deleted outside the app (so its recorded path no longer
+  exists) is hidden from the normal view — with a small warning like "⚠ 1
+  book missing... — click for details" appearing so you know something's
+  off — while its library entry (bookmarks, categories, notes) is kept in
+  case the file turns up again later, e.g. on a drive that wasn't connected.
+  Clicking that warning opens a list of exactly which books are missing and
+  where their file used to be, with the option to permanently remove any
+  that are gone for good.
 - **Two library views** — **Simple Text**, the detailed list (title, size,
   page count, last read), and **Image Preview**, a grid of page-1 thumbnails
   like a bookshelf. Thumbnails are generated once and cached to disk, so
@@ -78,14 +89,15 @@ and a distraction-free "simple text" reading mode.
   whenever that's turned on.
 - **Genre / Language filtering** — turn on **Genres & Languages** in the
   toolbar to swap the A-Z bar for a filter bar: a **Genre** dropdown and a
-  **Language** dropdown, each letting you check any number of options at
-  once (matches are OR'd together) — the popup stays open across clicks so
-  you can pick several without reopening it, and it works the same way even
-  if a pick happens to match zero books, so you can freely adjust your
-  filter without the menu closing or the bar disappearing. A book with more
-  than one genre or language (e.g. "English_Bulgarian") matches if it has
-  *any* of the values you've selected. Genre and Language filters combine
-  with each other (AND) and with everything else — search, status,
+  **Language** dropdown side by side, each letting you check any number of
+  options at once (matches are OR'd together). Click anywhere on either box
+  to open it, not just the little arrow — and the popup stays open across
+  clicks so you can check several without reopening it, working the same
+  way even if a pick happens to match zero books, so you can freely adjust
+  your filter without the menu closing or the bar disappearing. A book with
+  more than one genre or language (e.g. "English_Bulgarian") matches if it
+  has *any* of the values you've selected. Genre and Language filters
+  combine with each other (AND) and with everything else — search, status,
   category. **Clear Filters** deselects everything at once; turning the
   toggle off does the same and brings the A-Z bar back. Both dropdowns come
   with a comprehensive preset list (40+ genres, 35+ languages) so there's a

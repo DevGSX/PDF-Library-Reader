@@ -8,6 +8,7 @@ from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -89,13 +90,13 @@ class LibraryWindow(QMainWindow):
         self.genre_lang_filter_mode = False  # when on, replaces the A-Z bar with genre/language filters
         self.selected_genres = set()
         self.selected_languages = set()
+        self._missing_book_ids = set()  # books whose file wasn't found on disk at last sync
 
         self._build_ui()
         self._apply_theme(self.db.get_setting("theme", "light"))
         self.text_view_btn.setChecked(self.view_mode == "list")
         self.image_view_btn.setChecked(self.view_mode == "grid")
-        self.refresh_categories_sidebar()
-        self.refresh_list()
+        self.refresh_library()  # initial startup check: also syncs missing files
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -158,6 +159,17 @@ class LibraryWindow(QMainWindow):
         )
         self.genre_lang_filter_btn.clicked.connect(self.toggle_genre_lang_filter_mode)
         toolbar.addWidget(self.genre_lang_filter_btn)
+
+        toolbar.addSeparator()
+
+        refresh_action = QAction("Refresh", self)
+        refresh_action.setShortcut(QKeySequence("F5"))
+        refresh_action.setToolTip(
+            "Refresh the library (F5) -- re-checks for files that were renamed "
+            "or deleted outside the app"
+        )
+        refresh_action.triggered.connect(self.refresh_library)
+        toolbar.addAction(refresh_action)
 
         toolbar.addSeparator()
 
@@ -238,6 +250,22 @@ class LibraryWindow(QMainWindow):
         layout.addLayout(selection_row)
         self.selection_label.hide()
         self.clear_selection_btn.hide()
+
+        # Missing-files indicator: shown after a sync (startup or Refresh/F5)
+        # finds books whose file wasn't found where the library expects it.
+        missing_row = QHBoxLayout()
+        self.missing_files_btn = QPushButton("")
+        self.missing_files_btn.setFlat(True)
+        self.missing_files_btn.setCursor(Qt.PointingHandCursor)
+        self.missing_files_btn.setStyleSheet(
+            "color: #b45309; text-align: left; border: none; padding: 2px 0px;"
+        )
+        self.missing_files_btn.setToolTip("Click to see which books and choose what to do")
+        self.missing_files_btn.clicked.connect(self._show_missing_files_dialog)
+        missing_row.addWidget(self.missing_files_btn)
+        missing_row.addStretch()
+        layout.addLayout(missing_row)
+        self.missing_files_btn.hide()
 
         # Live categorized preview (Titles / Authors / Series / Genres) shown
         # while typing in the filter box; hidden whenever no text or no matches.
@@ -365,35 +393,31 @@ class LibraryWindow(QMainWindow):
     # ------------- Genre / Language filter bar (replaces the A-Z bar) -------------
     def _build_genre_lang_bar(self):
         bar = QWidget()
-        bar_layout = QVBoxLayout(bar)
+        bar_layout = QHBoxLayout(bar)
         bar_layout.setContentsMargins(2, 2, 2, 2)
-        bar_layout.setSpacing(4)
+        bar_layout.setSpacing(6)
 
-        genre_row = QHBoxLayout()
-        genre_row.addWidget(QLabel("Genre:"))
+        bar_layout.addWidget(QLabel("Genre:"))
         self.genre_filter_combo = MultiSelectComboBox()
         self.genre_filter_combo.setToolTip(
             "Select one or more genres -- matches are OR'd together"
         )
         self.genre_filter_combo.selection_changed.connect(self._on_genre_filter_changed)
-        genre_row.addWidget(self.genre_filter_combo, stretch=1)
-        bar_layout.addLayout(genre_row)
+        bar_layout.addWidget(self.genre_filter_combo, stretch=1)
 
-        lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel("Language:"))
+        bar_layout.addWidget(QLabel("Language:"))
         self.language_filter_combo = MultiSelectComboBox()
         self.language_filter_combo.setToolTip(
             "Select one or more languages -- a multi-language book matches if "
             "it has ANY of the languages you pick"
         )
         self.language_filter_combo.selection_changed.connect(self._on_language_filter_changed)
-        lang_row.addWidget(self.language_filter_combo, stretch=1)
+        bar_layout.addWidget(self.language_filter_combo, stretch=1)
 
         clear_btn = QPushButton("Clear Filters")
         clear_btn.setToolTip("Deselect every genre and language filter")
         clear_btn.clicked.connect(self._clear_genre_lang_filters)
-        lang_row.addWidget(clear_btn)
-        bar_layout.addLayout(lang_row)
+        bar_layout.addWidget(clear_btn)
 
         return bar
 
@@ -879,6 +903,85 @@ class LibraryWindow(QMainWindow):
         QApplication.instance().setStyleSheet(DARK_THEME if theme == "dark" else LIGHT_THEME)
         self.theme_btn.setChecked(theme == "dark")
 
+    # ------------- Library sync (missing/renamed files) -------------
+    def refresh_library(self):
+        """Re-check the library against what's on disk -- run automatically
+        on startup, and on demand via the Refresh button or F5. Catches
+        files that were renamed or deleted outside the app, and refreshes
+        category counts and the book list to match."""
+        self._sync_missing_files()
+        self.refresh_categories_sidebar()
+        self.refresh_list()
+
+    def _sync_missing_files(self):
+        self._missing_book_ids = {
+            book["id"] for book in self.db.get_books() if not os.path.exists(book["filepath"])
+        }
+        self._update_missing_files_indicator()
+
+    def _update_missing_files_indicator(self):
+        n = len(self._missing_book_ids)
+        self.missing_files_btn.setVisible(n > 0)
+        if n > 0:
+            self.missing_files_btn.setText(
+                f"\u26a0 {n} book{'s' if n != 1 else ''} missing (renamed or moved "
+                f"outside the app) \u2014 click for details"
+            )
+
+    def _show_missing_files_dialog(self):
+        missing_books = [b for b in (self.db.get_book(bid) for bid in self._missing_book_ids) if b]
+        if not missing_books:
+            return
+        missing_books.sort(key=lambda b: b["title"].lower())
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Missing Books")
+        dialog.resize(480, 360)
+        layout = QVBoxLayout(dialog)
+
+        hint = QLabel(
+            "These books' files weren't found where the library expects them "
+            "\u2014 likely renamed or moved outside the app, or on a drive "
+            "that isn't connected right now. They're hidden from the library "
+            "until their file turns up again at the next refresh (F5), or "
+            "you can remove their entries below if they're gone for good."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        list_widget = QListWidget()
+        for book in missing_books:
+            list_widget.addItem(QListWidgetItem(f"{book['title']} \u2014 {book['filepath']}"))
+        layout.addWidget(list_widget)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.close)
+        btn_row.addWidget(close_btn)
+        book_ids = [b["id"] for b in missing_books]
+        remove_btn = QPushButton(f"Remove All {len(book_ids)} from Library")
+        remove_btn.clicked.connect(lambda: self._remove_missing_books(dialog, book_ids))
+        btn_row.addWidget(remove_btn)
+        layout.addLayout(btn_row)
+
+        dialog.exec()
+
+    def _remove_missing_books(self, dialog, book_ids):
+        reply = QMessageBox.question(
+            self,
+            "Remove missing books",
+            f"Permanently remove {len(book_ids)} book(s) from your library? "
+            f"This only removes their library entries (bookmarks, categories, "
+            f"metadata) \u2014 there's no file to delete, since they're already gone.",
+        )
+        if reply == QMessageBox.Yes:
+            for book_id in book_ids:
+                self.db.remove_book(book_id)
+                delete_thumbnail(book_id)
+            dialog.close()
+            self.refresh_library()
+
     def refresh_list(self):
         sort_by, descending = SORT_OPTIONS[self.sort_combo.currentIndex()]
         search = self.search_box.text().strip() or None
@@ -893,6 +996,14 @@ class LibraryWindow(QMainWindow):
             genres=list(self.selected_genres) if self.selected_genres else None,
             languages=list(self.selected_languages) if self.selected_languages else None,
         )
+
+        # Books whose file wasn't found at the last sync (startup or a
+        # Refresh/F5) are kept in the database -- in case the file was just
+        # temporarily unavailable (e.g. an external drive) -- but hidden from
+        # the normal view so a stale, broken entry doesn't show up as if
+        # nothing's wrong.
+        if self._missing_book_ids:
+            all_books = [b for b in all_books if b["id"] not in self._missing_book_ids]
 
         if self.genre_lang_filter_mode:
             self._refresh_genre_lang_bar_contents()
