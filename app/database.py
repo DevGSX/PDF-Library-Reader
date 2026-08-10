@@ -106,9 +106,9 @@ class Database:
         `status`, if given, restricts to one of 'unread' | 'reading' | 'finished'.
         `category_id`, if given, restricts to books belonging to that category.
         `genres`, if given, restricts to books whose (possibly multi-value,
-        "Science Fiction;Fantasy"-style) genre field CONTAINS any of the
+        "Science Fiction_Fantasy"-style) genre field CONTAINS any of the
         listed values. `languages` works the same way for the (also possibly
-        multi-value, "English;Bulgarian"-style) language field -- either way,
+        multi-value, "English_Bulgarian"-style) language field -- either way,
         a multi-value book matches if it has ANY of the values you're
         filtering by, not all of them."""
         query = "SELECT books.* FROM books"
@@ -191,14 +191,14 @@ class Database:
 
     def get_distinct_genres(self):
         """Individual genre tokens in use, splitting any multi-value
-        ('Science Fiction;Fantasy') entries into their separate parts, so
+        ('Science Fiction_Fantasy') entries into their separate parts, so
         each genre is offered as its own filterable option."""
         cur = self.conn.execute(
             "SELECT DISTINCT genre FROM books WHERE genre IS NOT NULL AND genre != ''"
         )
         tokens = set()
         for r in cur.fetchall():
-            for part in r["genre"].split(";"):
+            for part in r["genre"].split("_"):
                 part = part.strip()
                 if part:
                     tokens.add(part)
@@ -206,14 +206,14 @@ class Database:
 
     def get_distinct_languages(self):
         """Individual language tokens in use, splitting any multi-value
-        ('English;Bulgarian') entries into their separate parts, so each
+        ('English_Bulgarian') entries into their separate parts, so each
         language is offered as its own filterable option."""
         cur = self.conn.execute(
             "SELECT DISTINCT language FROM books WHERE language IS NOT NULL AND language != ''"
         )
         tokens = set()
         for r in cur.fetchall():
-            for part in r["language"].split(";"):
+            for part in r["language"].split("_"):
                 part = part.strip()
                 if part:
                     tokens.add(part)

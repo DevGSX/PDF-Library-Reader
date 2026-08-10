@@ -757,7 +757,7 @@ class LibraryWindow(QMainWindow):
                 items = [current] + items
         value, ok = QInputDialog.getItem(
             self, "Set Genre",
-            "Genre (use ; for more than one, e.g. Science Fiction;Fantasy):",
+            "Genre (use _ for more than one, e.g. Science Fiction_Fantasy):",
             items, start_index, editable=True,
         )
         if not ok:
@@ -775,7 +775,7 @@ class LibraryWindow(QMainWindow):
                 items = [current] + items
         value, ok = QInputDialog.getItem(
             self, "Set Language",
-            "Language (use ; for more than one, e.g. English;Bulgarian):",
+            "Language (use _ for more than one, e.g. English_Bulgarian):",
             items, start_index, editable=True,
         )
         if not ok:

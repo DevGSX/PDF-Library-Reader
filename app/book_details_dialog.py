@@ -4,8 +4,8 @@ title, author, series, genre(s), language(s), annotation, favorite and status.
 Genre and Language are both checkable multi-select dropdowns (a book can
 have more than one of either), each with a "Custom" checkbox that adds one
 more freely-typed value on top of whatever's picked from the list. Multiple
-values are joined with ';' -- e.g. "Science Fiction;Fantasy" or
-"English;Bulgarian".
+values are joined with '_' -- e.g. "Science Fiction_Fantasy" or
+"English_Bulgarian".
 """
 import os
 
@@ -113,11 +113,11 @@ class BookDetailsDialog(QDialog):
         layout.addLayout(form)
 
         hint = QLabel(
-            "Saving renames the file to \u201cTitle * Author * Series * Genre * "
+            "Saving renames the file to \u201cTitle - Author - Series - Genre - "
             "Language.pdf\u201d, so the info travels with it if you move or copy it "
             "to another device. A book with more than one genre or language "
-            "shows as e.g. \u201cScience Fiction;Fantasy\u201d or "
-            "\u201cEnglish;Bulgarian\u201d, and is found when searching for any one "
+            "shows as e.g. \u201cScience Fiction_Fantasy\u201d or "
+            "\u201cEnglish_Bulgarian\u201d, and is found when searching for any one "
             "of them."
         )
         hint.setWordWrap(True)
@@ -201,17 +201,17 @@ class BookDetailsDialog(QDialog):
 
     @staticmethod
     def _load_multi_value(raw_value, presets, combo, custom_check, custom_edit):
-        """Split a ';'-joined value: preset tokens get checked in the
+        """Split a '_'-joined value: preset tokens get checked in the
         dropdown, anything else goes into the Custom field (joined back with
-        ';' if there's more than one non-preset value)."""
-        tokens = [t.strip() for t in raw_value.split(";") if t.strip()]
+        '_' if there's more than one non-preset value)."""
+        tokens = [t.strip() for t in raw_value.split("_") if t.strip()]
         preset_set = set(presets)
         preset_tokens = [t for t in tokens if t in preset_set]
         custom_tokens = [t for t in tokens if t not in preset_set]
         combo.set_checked_items(preset_tokens)
         if custom_tokens:
             custom_check.setChecked(True)
-            custom_edit.setText(";".join(custom_tokens))
+            custom_edit.setText("_".join(custom_tokens))
         else:
             custom_check.setChecked(False)
             custom_edit.setText("")
@@ -230,7 +230,7 @@ class BookDetailsDialog(QDialog):
         if custom_check.isChecked():
             custom = custom_edit.text().strip()
             if custom:
-                parts.extend(p.strip() for p in custom.split(";") if p.strip())
+                parts.extend(p.strip() for p in custom.split("_") if p.strip())
         # de-duplicate while preserving order
         seen = set()
         ordered = []
@@ -238,7 +238,7 @@ class BookDetailsDialog(QDialog):
             if p not in seen:
                 seen.add(p)
                 ordered.append(p)
-        return ";".join(ordered)
+        return "_".join(ordered)
 
     def _current_genre(self):
         return self._combine_multi_value(self.genre_combo, self.genre_custom_check, self.genre_custom_edit)

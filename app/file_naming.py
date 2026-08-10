@@ -3,10 +3,11 @@ Language metadata, so the information travels with the file itself (e.g.
 when copying the whole library folder to another device) instead of only
 living in the database.
 
-Genre and Language can each hold more than one value, separated by ';'
-(e.g. "English;Bulgarian", "Science Fiction;Fantasy") -- unlike '/', a
-semicolon is a perfectly ordinary character on every filesystem, so it
-needs no special handling to show up correctly in an actual filename.
+Genre and Language can each hold more than one value, separated by '_'
+(e.g. "English_Bulgarian", "Science Fiction_Fantasy") -- both '-' (the
+field separator below) and '_' are perfectly ordinary characters on every
+filesystem, so neither needs any special handling to show up correctly in
+an actual filename.
 """
 import os
 import re
@@ -23,17 +24,17 @@ def _sanitize(text):
 
 
 def build_filename(title, author, series, genre, language, ext):
-    """'Title * Author * Series * Genre * Language.pdf' -- empty parts are
+    """'Title - Author - Series - Genre - Language.pdf' -- empty parts are
     dropped, e.g. a book with nothing but a title just becomes 'Title.pdf'.
     A book with more than one genre or language renders as such directly,
-    e.g. "English;Bulgarian" or "Science Fiction;Fantasy"."""
+    e.g. "English_Bulgarian" or "Science Fiction_Fantasy"."""
     parts = [
         p for p in (
             _sanitize(title), _sanitize(author), _sanitize(series),
             _sanitize(genre), _sanitize(language),
         ) if p
     ]
-    name = " * ".join(parts) if parts else "Untitled"
+    name = " - ".join(parts) if parts else "Untitled"
     if len(name) > MAX_NAME_LENGTH:
         name = name[:MAX_NAME_LENGTH].rstrip()
     return f"{name}{ext}"
@@ -41,19 +42,19 @@ def build_filename(title, author, series, genre, language, ext):
 
 def parse_filename(filename):
     """Inverse of build_filename(): given a filename (with or without its
-    extension) split on ' * ' into title/author/series/genre/language. Title
+    extension) split on ' - ' into title/author/series/genre/language. Title
     always ends up populated (falling back to the whole filename, or
     'Untitled' if even that is empty); the rest default to '' when not
     present. Extra segments beyond five are ignored.
 
     This only round-trips exactly for filenames this app generated -- if a
     field was left blank when the file was named, later fields shift up by
-    one slot, since a plain 'A * B * C' has no way to record *which* field
+    one slot, since a plain 'A - B - C' has no way to record *which* field
     was skipped. Title itself is never ambiguous: it's always the first
     segment when present, since the app never lets Title be saved blank.
     """
     name = os.path.splitext(filename)[0]
-    parts = [p.strip() for p in name.split(" * ")]
+    parts = [p.strip() for p in name.split(" - ")]
     parts = [p for p in parts if p]
     if not parts:
         return {"title": "Untitled", "author": "", "series": "", "genre": "", "language": ""}

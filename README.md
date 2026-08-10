@@ -41,10 +41,10 @@ and a distraction-free "simple text" reading mode.
   doesn't keep popping the panel open.
 - **Filename stays in sync with Title / Author / Series / Genre / Language**
   — saving details renames the actual file on disk to
-  `Title * Author * Series * Genre * Language.pdf` (empty parts are just
+  `Title - Author - Series - Genre - Language.pdf` (empty parts are just
   dropped, e.g. `Title.pdf` if nothing else is set yet). A book with more
-  than one genre or language shows up as e.g. "Science Fiction;Fantasy" or
-  "English;Bulgarian" right in the filename, and is found when filtering or
+  than one genre or language shows up as e.g. "Science Fiction_Fantasy" or
+  "English_Bulgarian" right in the filename, and is found when filtering or
   searching for any one of them on its own. That way the metadata travels
   with the file itself — copy your library folder to another device and
   it's all right there in the filenames, no re-entering anything by hand.
@@ -83,7 +83,7 @@ and a distraction-free "simple text" reading mode.
   you can pick several without reopening it, and it works the same way even
   if a pick happens to match zero books, so you can freely adjust your
   filter without the menu closing or the bar disappearing. A book with more
-  than one genre or language (e.g. "English;Bulgarian") matches if it has
+  than one genre or language (e.g. "English_Bulgarian") matches if it has
   *any* of the values you've selected. Genre and Language filters combine
   with each other (AND) and with everything else — search, status,
   category. **Clear Filters** deselects everything at once; turning the
