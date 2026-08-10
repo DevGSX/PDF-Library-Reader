@@ -19,16 +19,17 @@ and a distraction-free "simple text" reading mode.
   Re-scanning a folder you've already added never overwrites metadata you
   edited by hand.
 - **Refresh (F5)** — click **Refresh** in the toolbar, or just press **F5**,
-  to re-check the library against what's actually on disk. This also runs
-  automatically every time you start the app. Any book whose file was
-  renamed or deleted outside the app (so its recorded path no longer
-  exists) is hidden from the normal view — with a small warning like "⚠ 1
-  book missing... — click for details" appearing so you know something's
-  off — while its library entry (bookmarks, categories, notes) is kept in
-  case the file turns up again later, e.g. on a drive that wasn't connected.
-  Clicking that warning opens a list of exactly which books are missing and
-  where their file used to be, with the option to permanently remove any
-  that are gone for good.
+  to re-check the library against what's actually on disk. The button
+  briefly shows "✓ Refreshed" so you know your click (or F5) actually did
+  something, even if nothing changed. This also runs automatically every
+  time you start the app. Any book whose file was renamed or deleted
+  outside the app (so its recorded path no longer exists) is hidden from
+  the normal view — with a small warning like "⚠ 1 book missing... — click
+  for details" appearing so you know something's off — while its library
+  entry (bookmarks, categories, notes) is kept in case the file turns up
+  again later, e.g. on a drive that wasn't connected. Clicking that warning
+  opens a list of exactly which books are missing and where their file used
+  to be, with the option to permanently remove any that are gone for good.
 - **Two library views** — **Simple Text**, the detailed list (title, size,
   page count, last read), and **Image Preview**, a grid of page-1 thumbnails
   like a bookshelf. Thumbnails are generated once and cached to disk, so

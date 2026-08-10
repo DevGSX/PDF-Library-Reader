@@ -96,7 +96,7 @@ class LibraryWindow(QMainWindow):
         self._apply_theme(self.db.get_setting("theme", "light"))
         self.text_view_btn.setChecked(self.view_mode == "list")
         self.image_view_btn.setChecked(self.view_mode == "grid")
-        self.refresh_library()  # initial startup check: also syncs missing files
+        self.refresh_library(show_feedback=False)  # initial startup check: also syncs missing files
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -168,8 +168,9 @@ class LibraryWindow(QMainWindow):
             "Refresh the library (F5) -- re-checks for files that were renamed "
             "or deleted outside the app"
         )
-        refresh_action.triggered.connect(self.refresh_library)
+        refresh_action.triggered.connect(lambda: self.refresh_library())
         toolbar.addAction(refresh_action)
+        self.refresh_action = refresh_action
 
         toolbar.addSeparator()
 
@@ -904,7 +905,7 @@ class LibraryWindow(QMainWindow):
         self.theme_btn.setChecked(theme == "dark")
 
     # ------------- Library sync (missing/renamed files) -------------
-    def refresh_library(self):
+    def refresh_library(self, show_feedback=True):
         """Re-check the library against what's on disk -- run automatically
         on startup, and on demand via the Refresh button or F5. Catches
         files that were renamed or deleted outside the app, and refreshes
@@ -912,6 +913,14 @@ class LibraryWindow(QMainWindow):
         self._sync_missing_files()
         self.refresh_categories_sidebar()
         self.refresh_list()
+        if show_feedback:
+            self._flash_refresh_feedback()
+
+    def _flash_refresh_feedback(self):
+        """A simple, temporary visual cue on the Refresh button itself so a
+        click that finds nothing new still visibly confirms it worked."""
+        self.refresh_action.setText("\u2713 Refreshed")
+        QTimer.singleShot(1200, lambda: self.refresh_action.setText("Refresh"))
 
     def _sync_missing_files(self):
         self._missing_book_ids = {
@@ -980,7 +989,7 @@ class LibraryWindow(QMainWindow):
                 self.db.remove_book(book_id)
                 delete_thumbnail(book_id)
             dialog.close()
-            self.refresh_library()
+            self.refresh_library(show_feedback=False)
 
     def refresh_list(self):
         sort_by, descending = SORT_OPTIONS[self.sort_combo.currentIndex()]

@@ -28,9 +28,17 @@ class MultiSelectComboBox(QComboBox):
         self._skip_next_hide = False
 
     def eventFilter(self, obj, event):
-        if obj is self.lineEdit() and event.type() == QEvent.MouseButtonPress:
-            self.showPopup()
-            return True
+        if obj is self.lineEdit():
+            if event.type() == QEvent.MouseButtonPress:
+                # Swallow the press -- opening the popup here would tie it to
+                # Qt's classic press-hold-drag-release combo-box gesture, so
+                # it would only stay open for as long as the button stays
+                # held down. Wait for release instead, once the button truly
+                # isn't held anymore, so it opens as an independent popup.
+                return True
+            if event.type() == QEvent.MouseButtonRelease:
+                self.showPopup()
+                return True
         return super().eventFilter(obj, event)
 
     def add_items(self, items):
