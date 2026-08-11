@@ -691,30 +691,39 @@ class LibraryWindow(QMainWindow):
         self._run_export(None)
 
     def _run_export(self, book_ids):
+        """Returns True once the export actually completes, False if there
+        was nothing to export, the save dialog was canceled, or writing
+        failed -- used by callers that only want to react (e.g. clear a
+        selection) on genuine success."""
         data = build_export_data(self.db, book_ids)
         if not data["books"]:
             QMessageBox.information(
                 self, "Nothing to export",
                 "None of those books belong to any category, so there's nothing to export.",
             )
-            return
+            return False
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Categories", os.path.expanduser("~/library-categories.json"),
             "JSON files (*.json)",
         )
         if not path:
-            return
+            return False
         try:
             write_export_file(path, data)
         except OSError as exc:
             QMessageBox.critical(self, "Export failed", f"Couldn't write the export file:\n{exc}")
-            return
+            return False
         n_books, n_cats = len(data["books"]), len(data["categories"])
         QMessageBox.information(
             self, "Export complete",
             f"Exported {n_books} book{'s' if n_books != 1 else ''} across {n_cats} "
             f"categor{'y' if n_cats == 1 else 'ies'} to:\n{path}",
         )
+        return True
+
+    def _export_selected_books(self, book_ids, clear_selection_after=False):
+        if self._run_export(list(book_ids)) and clear_selection_after:
+            self.clear_selection()
 
     def import_library(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -853,6 +862,9 @@ class LibraryWindow(QMainWindow):
         )
         menu.addAction(f"Set Language for {n} Selected...").triggered.connect(
             lambda: self._set_language_for_books(list(book_ids), clear_selection_after=True)
+        )
+        menu.addAction(f"Export {n} Selected...").triggered.connect(
+            lambda: self._export_selected_books(list(book_ids), clear_selection_after=True)
         )
         menu.addAction(f"Remove {n} Selected from Library").triggered.connect(
             lambda: self._bulk_remove_books(list(book_ids))
@@ -1257,10 +1269,12 @@ class LibraryWindow(QMainWindow):
         else:
             self._render_list(books)
 
-        # Deferred: the scrollbar's range isn't recomputed synchronously
-        # right after rebuilding the content, so restoring immediately would
-        # often just get clamped back to 0. Let the new layout settle first.
-        QTimer.singleShot(0, lambda: self._restore_scroll_position(list_scroll, grid_scroll))
+        # Synchronous, not deferred: both QListWidget and the grid's
+        # scrollbar range are already correct immediately after rebuilding,
+        # and restoring right away (same paint cycle) avoids a visible
+        # flicker where the list would otherwise flash at the top for a
+        # frame before jumping back down to the restored position.
+        self._restore_scroll_position(list_scroll, grid_scroll)
 
     def _restore_scroll_position(self, list_scroll, grid_scroll):
         self.list_widget.verticalScrollBar().setValue(list_scroll)
