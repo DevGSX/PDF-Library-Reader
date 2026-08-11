@@ -1,11 +1,41 @@
-"""A QComboBox that lets you check multiple items instead of picking just
-one -- the popup stays open across clicks so you can check several items in
-one go, and the closed box shows a comma-joined summary of what's checked.
-Used for Language, since a book can have more than one.
+"""Combo box widgets that open their dropdown from a click anywhere on the
+box, not just the small arrow button -- Qt's default behavior for an
+*editable* QComboBox (which both of these are, in order to show custom
+summary/typed text) only reacts to the arrow on a plain click; clicking the
+box itself just ties the popup to the classic press-hold-drag-release combo
+gesture, so it only stays visible for as long as the button is held down.
+
+ClickToOpenComboBox is a plain, single-select combo (used e.g. for Series).
+MultiSelectComboBox additionally lets you check any number of items at once
+-- the popup stays open across clicks so you can check several in one go,
+and the closed box shows a comma-joined summary of what's checked. Used for
+Genre and Language, since a book can have more than one of either.
 """
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QComboBox
+
+
+class ClickToOpenComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj is self.lineEdit():
+            if event.type() == QEvent.MouseButtonPress:
+                # Swallow the press -- opening the popup here would tie it to
+                # Qt's classic press-hold-drag-release combo-box gesture, so
+                # it would only stay open for as long as the button stays
+                # held down. Wait for release instead, once the button truly
+                # isn't held anymore, so it opens as an independent popup.
+                return True
+            if event.type() == QEvent.MouseButtonRelease:
+                self.showPopup()
+                return True
+        return super().eventFilter(obj, event)
 
 
 class MultiSelectComboBox(QComboBox):
@@ -16,11 +46,9 @@ class MultiSelectComboBox(QComboBox):
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
         self.lineEdit().setPlaceholderText("(none selected)")
-        # An editable combo's line-edit area only opens the popup via the
-        # dropdown arrow by default -- clicking the text/box itself just
-        # tries to place a text cursor. Since the line edit is read-only
-        # anyway (it's just a display summary, not something to type in),
-        # intercept clicks on it and open the popup instead.
+        # See ClickToOpenComboBox above / the module docstring for why this
+        # is needed at all -- the line edit is a display summary only, never
+        # something to type into directly.
         self.lineEdit().installEventFilter(self)
         self._model = QStandardItemModel(self)
         self.setModel(self._model)

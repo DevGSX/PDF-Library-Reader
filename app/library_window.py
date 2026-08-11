@@ -7,6 +7,7 @@ import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -32,7 +33,7 @@ from .book_details_dialog import BookDetailsDialog
 from .database import Database
 from .file_naming import parse_filename, sync_filename
 from .flow_layout import FlowLayout
-from .multi_select_combo import MultiSelectComboBox
+from .multi_select_combo import ClickToOpenComboBox, MultiSelectComboBox
 from .presets import GENRE_PRESETS, LANGUAGE_PRESETS
 from .reader_window import ReaderWindow
 from .search_dialog import TextSearchDialog
@@ -758,54 +759,104 @@ class LibraryWindow(QMainWindow):
         existing = sorted(
             {b["series"] for b in self.db.get_books() if b.get("series")}, key=str.lower
         )
-        items = existing or [""]
-        start_index = 0
+        current = ""
         if len(book_ids) == 1:
             current = (self.db.get_book(book_ids[0]) or {"series": ""})["series"] or ""
-            if current in items:
-                start_index = items.index(current)
-        value, ok = QInputDialog.getItem(
-            self, "Set Series", "Series:", items, start_index, editable=True
-        )
-        if not ok:
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Set Series")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Series:"))
+        combo = ClickToOpenComboBox()
+        combo.addItems(existing)
+        combo.setCurrentText(current)
+        layout.addWidget(combo)
+        layout.addLayout(self._ok_cancel_row(dialog))
+
+        if dialog.exec() != QDialog.Accepted:
             return
-        self._apply_bulk_field(book_ids, self.db.bulk_set_series, value.strip(), clear_selection_after)
+        self._apply_bulk_field(
+            book_ids, self.db.bulk_set_series, combo.currentText().strip(), clear_selection_after
+        )
 
     def _set_genre_for_books(self, book_ids, clear_selection_after=False):
-        items = list(GENRE_PRESETS)
-        start_index = 0
+        current = ""
         if len(book_ids) == 1:
             current = (self.db.get_book(book_ids[0]) or {"genre": ""})["genre"] or ""
-            if current in items:
-                start_index = items.index(current)
-            elif current:
-                items = [current] + items
-        value, ok = QInputDialog.getItem(
-            self, "Set Genre",
-            "Genre (use _ for more than one, e.g. Science Fiction_Fantasy):",
-            items, start_index, editable=True,
-        )
-        if not ok:
+        value = self._prompt_multi_value("Set Genre", GENRE_PRESETS, current)
+        if value is None:
             return
-        self._apply_bulk_field(book_ids, self.db.bulk_set_genre, value.strip(), clear_selection_after)
+        self._apply_bulk_field(book_ids, self.db.bulk_set_genre, value, clear_selection_after)
 
     def _set_language_for_books(self, book_ids, clear_selection_after=False):
-        items = list(LANGUAGE_PRESETS)
-        start_index = 0
+        current = ""
         if len(book_ids) == 1:
             current = (self.db.get_book(book_ids[0]) or {"language": ""})["language"] or ""
-            if current in items:
-                start_index = items.index(current)
-            elif current:
-                items = [current] + items
-        value, ok = QInputDialog.getItem(
-            self, "Set Language",
-            "Language (use _ for more than one, e.g. English_Bulgarian):",
-            items, start_index, editable=True,
-        )
-        if not ok:
+        value = self._prompt_multi_value("Set Language", LANGUAGE_PRESETS, current)
+        if value is None:
             return
-        self._apply_bulk_field(book_ids, self.db.bulk_set_language, value.strip(), clear_selection_after)
+        self._apply_bulk_field(book_ids, self.db.bulk_set_language, value, clear_selection_after)
+
+    def _prompt_multi_value(self, title, presets, current_value):
+        """Shared dialog for bulk-setting Genre/Language: a checkable
+        multi-select dropdown (check any number of presets) plus a Custom
+        field for one more, freely-typed value -- mirrors the same fields in
+        Book Details. Returns the new '_'-joined value, or None if canceled."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        layout = QVBoxLayout(dialog)
+
+        combo = MultiSelectComboBox()
+        combo.add_items(presets)
+        custom_check = QCheckBox("Custom")
+        custom_edit = QLineEdit()
+        custom_edit.setPlaceholderText("Add another...")
+        custom_edit.hide()
+        custom_check.toggled.connect(custom_edit.setVisible)
+
+        tokens = [t.strip() for t in (current_value or "").split("_") if t.strip()]
+        preset_set = set(presets)
+        preset_tokens = [t for t in tokens if t in preset_set]
+        custom_tokens = [t for t in tokens if t not in preset_set]
+        combo.set_checked_items(preset_tokens)
+        if custom_tokens:
+            custom_check.setChecked(True)
+            custom_edit.setText("_".join(custom_tokens))
+
+        row = QHBoxLayout()
+        row.addWidget(combo, stretch=1)
+        row.addWidget(custom_edit, stretch=1)
+        row.addWidget(custom_check)
+        layout.addLayout(row)
+        layout.addLayout(self._ok_cancel_row(dialog))
+
+        if dialog.exec() != QDialog.Accepted:
+            return None
+
+        parts = list(combo.checked_items())
+        if custom_check.isChecked():
+            custom = custom_edit.text().strip()
+            if custom:
+                parts.extend(p.strip() for p in custom.split("_") if p.strip())
+        seen, ordered = set(), []
+        for p in parts:
+            if p not in seen:
+                seen.add(p)
+                ordered.append(p)
+        return "_".join(ordered)
+
+    @staticmethod
+    def _ok_cancel_row(dialog):
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        row.addWidget(cancel_btn)
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        row.addWidget(ok_btn)
+        return row
 
     def _apply_bulk_field(self, book_ids, db_setter, value, clear_selection_after):
         db_setter(book_ids, value)
