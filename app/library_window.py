@@ -7,6 +7,7 @@ import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
 from .add_to_category_dialog import AddToCategoryDialog
 from .badges import decorate_thumbnail
 from .book_details_dialog import BookDetailsDialog
+from .category_export import apply_import_data, build_export_data, read_export_file, write_export_file
 from .database import Database
 from .file_naming import parse_filename, sync_filename
 from .flow_layout import FlowLayout
@@ -172,6 +174,21 @@ class LibraryWindow(QMainWindow):
         refresh_action.triggered.connect(lambda: self.refresh_library())
         toolbar.addAction(refresh_action)
         self.refresh_action = refresh_action
+
+        toolbar.addSeparator()
+
+        export_action = QAction("Export...", self)
+        export_action.setToolTip(
+            "Export categories (with the books in them) to a JSON file -- "
+            "carry them along when moving books to another device"
+        )
+        export_action.triggered.connect(self.export_library)
+        toolbar.addAction(export_action)
+
+        import_action = QAction("Import...", self)
+        import_action.setToolTip("Import categories from a previously exported JSON file")
+        import_action.triggered.connect(self.import_library)
+        toolbar.addAction(import_action)
 
         toolbar.addSeparator()
 
@@ -494,14 +511,17 @@ class LibraryWindow(QMainWindow):
         sidebar_layout.addWidget(new_cat_btn)
 
         self.category_list = QListWidget()
-        self.category_list.itemClicked.connect(self._on_category_selected)
+        self.category_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.category_list.itemSelectionChanged.connect(self._on_category_selection_changed)
         self.category_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.category_list.customContextMenuRequested.connect(self._show_category_context_menu)
         sidebar_layout.addWidget(self.category_list)
 
         hint = QLabel(
-            "Right-click a category to add books, favorite, rename, or delete it. "
-            "Right-click any book (or a multi-selection) to add it to a category."
+            "Right-click a category to add books, favorite, rename, export, "
+            "or delete it. Ctrl+click/Shift+click/Ctrl+A to select several "
+            "categories for bulk actions. Right-click any book (or a "
+            "multi-selection) to add it to a category."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #888; font-size: 11px;")
@@ -526,11 +546,16 @@ class LibraryWindow(QMainWindow):
                 selected_row = i
         self.category_list.setCurrentRow(selected_row)
 
-    def _on_category_selected(self, item):
-        self.category_list.setCurrentItem(item)  # keep the highlight correct even
-        self.selected_category_id = item.data(Qt.UserRole)  # if called programmatically
-        self.library_page = 1
-        self.refresh_list()
+    def _on_category_selection_changed(self):
+        # Plain click (or Ctrl+click down to exactly one) sets the active
+        # filter; a genuine multi-selection (2+, via Ctrl/Shift-click or
+        # Ctrl+A) is for bulk actions instead and doesn't change what's
+        # currently being filtered by.
+        selected = self.category_list.selectedItems()
+        if len(selected) == 1:
+            self.selected_category_id = selected[0].data(Qt.UserRole)
+            self.library_page = 1
+            self.refresh_list()
 
     def create_new_category(self):
         name, ok = QInputDialog.getText(self, "New Category", "Category name:")
@@ -540,11 +565,19 @@ class LibraryWindow(QMainWindow):
 
     def _show_category_context_menu(self, pos):
         item = self.category_list.itemAt(pos)
-        if item is None:
-            return
+        if item is None or item.data(Qt.UserRole) is None:
+            return  # empty area, or the "All Books (None)" pseudo-entry
+
+        selected_items = [
+            i for i in self.category_list.selectedItems() if i.data(Qt.UserRole) is not None
+        ]
+        if item in selected_items and len(selected_items) > 1:
+            self._show_bulk_category_context_menu(selected_items, pos)
+        else:
+            self._show_single_category_context_menu(item, pos)
+
+    def _show_single_category_context_menu(self, item, pos):
         category_id = item.data(Qt.UserRole)
-        if category_id is None:
-            return  # the "All Books (None)" pseudo-entry has no actions
         category = self.db.get_category(category_id)
         if category is None:
             return
@@ -554,6 +587,7 @@ class LibraryWindow(QMainWindow):
         fav_label = "Remove from Favorite Categories" if category["is_favorite"] else "Favorite Category"
         fav_action = menu.addAction(fav_label)
         rename_action = menu.addAction("Rename...")
+        export_action = menu.addAction("Export...")
         delete_action = menu.addAction("Delete Category")
         chosen = menu.exec(self.category_list.viewport().mapToGlobal(pos))
 
@@ -564,8 +598,51 @@ class LibraryWindow(QMainWindow):
             self.refresh_categories_sidebar()
         elif chosen == rename_action:
             self._rename_category(category_id, category["name"])
+        elif chosen == export_action:
+            self._export_categories([category_id])
         elif chosen == delete_action:
             self._delete_category(category_id, category["name"])
+
+    def _show_bulk_category_context_menu(self, items, pos):
+        category_ids = [i.data(Qt.UserRole) for i in items]
+        n = len(category_ids)
+        menu = QMenu(self)
+        fav_action = menu.addAction(f"Favorite {n} Categories")
+        unfav_action = menu.addAction(f"Unfavorite {n} Categories")
+        export_action = menu.addAction(f"Export {n} Categories...")
+        delete_action = menu.addAction(f"Delete {n} Categories")
+        chosen = menu.exec(self.category_list.viewport().mapToGlobal(pos))
+
+        if chosen == fav_action:
+            self._bulk_set_category_favorite(category_ids, True)
+        elif chosen == unfav_action:
+            self._bulk_set_category_favorite(category_ids, False)
+        elif chosen == export_action:
+            self._export_categories(category_ids)
+        elif chosen == delete_action:
+            self._bulk_delete_categories(category_ids)
+
+    def _bulk_set_category_favorite(self, category_ids, favorite):
+        for cid in category_ids:
+            cat = self.db.get_category(cid)
+            if cat and bool(cat["is_favorite"]) != favorite:
+                self.db.toggle_category_favorite(cid)
+        self.refresh_categories_sidebar()
+
+    def _bulk_delete_categories(self, category_ids):
+        reply = QMessageBox.question(
+            self,
+            "Delete categories",
+            f"Delete these {len(category_ids)} categories? Your books stay in "
+            f"the library \u2014 they're just removed from these categories.",
+        )
+        if reply == QMessageBox.Yes:
+            for cid in category_ids:
+                self.db.delete_category(cid)
+                if self.selected_category_id == cid:
+                    self.selected_category_id = None
+            self.refresh_categories_sidebar()
+            self.refresh_list()
 
     def _rename_category(self, category_id, current_name):
         name, ok = QInputDialog.getText(
@@ -597,6 +674,97 @@ class LibraryWindow(QMainWindow):
         dialog.books_added.connect(self.refresh_categories_sidebar)
         dialog.books_added.connect(self.refresh_list)
         dialog.exec()
+
+    # ------------- Category export / import -------------
+    def _export_categories(self, category_ids):
+        """Export every book belonging to any of the given categories."""
+        book_ids = set()
+        for cid in category_ids:
+            book_ids.update(b["id"] for b in self.db.get_books(category_id=cid))
+        self._run_export(list(book_ids))
+
+    def export_library(self):
+        options = ["Entire Library", "Currently Filtered Books"]
+        if self._selected_book_ids:
+            options.append(f"Selected Books ({len(self._selected_book_ids)})")
+        choice, ok = QInputDialog.getItem(
+            self, "Export Categories", "What would you like to export?", options, 0, editable=False
+        )
+        if not ok:
+            return
+        if choice.startswith("Entire"):
+            self._run_export(None)
+        elif choice.startswith("Currently"):
+            self._run_export([b["id"] for b in self._get_filtered_books()])
+        else:
+            self._run_export(list(self._selected_book_ids))
+
+    def _get_filtered_books(self):
+        """The books matching the current search/status/category/genre/
+        language filters, ignoring pagination -- used for "export currently
+        filtered books" so it exports everything the filter matches, not
+        just whatever page happens to be showing."""
+        sort_by, descending = SORT_OPTIONS[self.sort_combo.currentIndex()]
+        search = self.search_box.text().strip() or None
+        status_filter = self.status_filter_combo.currentData()
+        return self.db.get_books(
+            favorites_only=self.show_favorites_only,
+            search=search,
+            sort_by=sort_by,
+            descending=descending,
+            status=status_filter,
+            category_id=self.selected_category_id,
+            genres=list(self.selected_genres) if self.selected_genres else None,
+            languages=list(self.selected_languages) if self.selected_languages else None,
+        )
+
+    def _run_export(self, book_ids):
+        data = build_export_data(self.db, book_ids)
+        if not data["books"]:
+            QMessageBox.information(
+                self, "Nothing to export",
+                "None of those books belong to any category, so there's nothing to export.",
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Categories", os.path.expanduser("~/library-categories.json"),
+            "JSON files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            write_export_file(path, data)
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Couldn't write the export file:\n{exc}")
+            return
+        n_books, n_cats = len(data["books"]), len(data["categories"])
+        QMessageBox.information(
+            self, "Export complete",
+            f"Exported {n_books} book{'s' if n_books != 1 else ''} across {n_cats} "
+            f"categor{'y' if n_cats == 1 else 'ies'} to:\n{path}",
+        )
+
+    def import_library(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Categories", os.path.expanduser("~"), "JSON files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            data = read_export_file(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Import failed", f"Couldn't read that file:\n{exc}")
+            return
+        summary = apply_import_data(self.db, data)
+        self.refresh_categories_sidebar()
+        self.refresh_list()
+        n_created = summary["categories_created"]
+        QMessageBox.information(
+            self, "Import complete",
+            f"Matched {summary['matched']} book(s) already in your library.\n"
+            f"Skipped {summary['skipped']} book(s) not found here.\n"
+            f"Created {n_created} new categor{'y' if n_created == 1 else 'ies'}.",
+        )
 
     # ------------- Multi-select & bulk actions -------------
     def toggle_book_selection(self, book_id):

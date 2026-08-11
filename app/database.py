@@ -102,6 +102,16 @@ class Database:
         cur = self.conn.execute("SELECT * FROM books WHERE filepath = ?", (filepath,))
         return cur.fetchone()
 
+    def get_book_by_filename(self, filename):
+        """Find a book by its file's basename rather than full path -- used
+        to match an imported category manifest against the current library,
+        since absolute paths won't line up across devices."""
+        cur = self.conn.execute("SELECT * FROM books")
+        for row in cur.fetchall():
+            if os.path.basename(row["filepath"]) == filename:
+                return dict(row)
+        return None
+
     def get_book(self, book_id):
         cur = self.conn.execute("SELECT * FROM books WHERE id = ?", (book_id,))
         return cur.fetchone()

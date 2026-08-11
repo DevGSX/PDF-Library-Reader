@@ -139,6 +139,26 @@ and a distraction-free "simple text" reading mode.
   all from the library at once — works in both Simple Text and Image
   Preview. The selection automatically clears itself once you commit an
   action like this, so it's ready for the next thing without an extra click.
+
+  The **category list itself** also supports multi-select — Ctrl+click,
+  Shift+click for a range, or Ctrl+A — for bulk-favoriting, bulk-deleting,
+  or bulk-exporting several categories at once via the right-click menu
+  (a plain click still just filters by that one category, as before).
+
+  **Export.../Import...** in the toolbar move categories (and their book
+  memberships) as a plain JSON file, matched by filename rather than exact
+  path — the natural way to carry your categories along when moving your
+  library to another device, since the books themselves already travel via
+  copying the files. Export offers **Entire Library**, **Currently Filtered
+  Books** (whatever your search/status/category/genre/language filters are
+  currently showing), or **Selected Books** (if you've selected some via
+  Select mode) — or export straight from a category's right-click menu.
+  Import matches books already in your library by filename and reports how
+  many matched vs. weren't found; re-importing the same file is always safe
+  (it won't create duplicate category memberships). This is deliberately a
+  manual, explicit action rather than an always-on background sync, so two
+  devices working from a shared/synced folder can't silently overwrite each
+  other's categories without you choosing to do it.
 - **Bookmarks** — save a bookmark (with an optional label) on any page inside
   a book, jump back to it later, remove it when you're done. The panel has
   its own "Bookmarks" toggle button next to "+ Bookmark" in the toolbar, so
