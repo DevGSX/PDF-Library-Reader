@@ -136,10 +136,11 @@ and a distraction-free "simple text" reading mode.
 
   While selected, right-click any selected book to add the whole selection
   to a category, **set the Series/Genre/Language** for every selected book
-  at once (a quick way to tag a batch of books in one go), or remove them
-  all from the library at once — works in both Simple Text and Image
-  Preview. The selection automatically clears itself once you commit an
-  action like this, so it's ready for the next thing without an extra click.
+  at once (a quick way to tag a batch of books in one go), **export just
+  their categories** to a JSON file, or remove them all from the library at
+  once — works in both Simple Text and Image Preview. The selection
+  automatically clears itself once you commit an action like this, so it's
+  ready for the next thing without an extra click.
 
   The **category list itself** also supports multi-select — Ctrl+click,
   Shift+click for a range, or Ctrl+A — for bulk-favoriting, bulk-deleting,
