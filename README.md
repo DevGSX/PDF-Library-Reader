@@ -86,10 +86,10 @@ and a distraction-free "simple text" reading mode.
   clickable A-Z index strip pinned above the grid so you can jump straight
   to any letter. Letters with matching books are clickable; letters with
   nothing yet are grayed out. The bar only appears while sorted
-  alphabetically, and is replaced by the Genre/Language filter bar (below)
-  whenever that's turned on.
+  alphabetically — it stays on top even when the Genre/Language filter bar
+  (below) is also turned on, so a big library can use both together.
 - **Genre / Language filtering** — turn on **Genres & Languages** in the
-  toolbar to swap the A-Z bar for a filter bar: a **Genre** dropdown and a
+  toolbar to show a filter bar underneath the A-Z index: a **Genre** dropdown and a
   **Language** dropdown side by side, each letting you check any number of
   options at once (matches are OR'd together). Click anywhere on either box
   to open it, not just the little arrow — and the popup stays open across
@@ -100,7 +100,8 @@ and a distraction-free "simple text" reading mode.
   has *any* of the values you've selected. Genre and Language filters
   combine with each other (AND) and with everything else — search, status,
   category. **Clear Filters** deselects everything at once; turning the
-  toggle off does the same and brings the A-Z bar back. Both dropdowns come
+  toggle off hides this bar again (the A-Z bar, if applicable, was never
+  hidden). Both dropdowns come
   with a comprehensive preset list (40+ genres, 35+ languages) so there's a
   consistent vocabulary to filter by, but any custom value you've typed in
   Book Details shows up as a filter option too.
@@ -148,17 +149,19 @@ and a distraction-free "simple text" reading mode.
   **Export.../Import...** in the toolbar move categories (and their book
   memberships) as a plain JSON file, matched by filename rather than exact
   path — the natural way to carry your categories along when moving your
-  library to another device, since the books themselves already travel via
-  copying the files. Export offers **Entire Library**, **Currently Filtered
-  Books** (whatever your search/status/category/genre/language filters are
-  currently showing), or **Selected Books** (if you've selected some via
-  Select mode) — or export straight from a category's right-click menu.
-  Import matches books already in your library by filename and reports how
-  many matched vs. weren't found; re-importing the same file is always safe
-  (it won't create duplicate category memberships). This is deliberately a
-  manual, explicit action rather than an always-on background sync, so two
-  devices working from a shared/synced folder can't silently overwrite each
-  other's categories without you choosing to do it.
+  library to another device, since the books themselves (and their
+  Title/Author/Series/Genre/Language) already travel via copying the files
+  and don't need to be duplicated into the export. Only category data is
+  exported — nothing else needs to be. **Export** in the toolbar exports
+  your entire library's categories in one click; to export just one
+  category or a specific few, right-click a category (or Ctrl+click/
+  Shift+click to select several first) and choose **Export...** there
+  instead. Import matches books already in your library by filename and
+  reports how many matched vs. weren't found; re-importing the same file is
+  always safe (it won't create duplicate category memberships). This is
+  deliberately a manual, explicit action rather than an always-on
+  background sync, so two devices working from a shared/synced folder can't
+  silently overwrite each other's categories without you choosing to do it.
 - **Bookmarks** — save a bookmark (with an optional label) on any page inside
   a book, jump back to it later, remove it when you're done. The panel has
   its own "Bookmarks" toggle button next to "+ Bookmark" in the toolbar, so

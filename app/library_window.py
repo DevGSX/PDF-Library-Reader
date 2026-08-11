@@ -158,7 +158,7 @@ class LibraryWindow(QMainWindow):
         self.genre_lang_filter_btn = QPushButton("Genres && Languages")
         self.genre_lang_filter_btn.setCheckable(True)
         self.genre_lang_filter_btn.setToolTip(
-            "Replace the A-Z index with a Genre/Language filter bar (Image Preview)"
+            "Show a Genre/Language filter bar below the A-Z index (Image Preview)"
         )
         self.genre_lang_filter_btn.clicked.connect(self.toggle_genre_lang_filter_mode)
         toolbar.addWidget(self.genre_lang_filter_btn)
@@ -684,39 +684,11 @@ class LibraryWindow(QMainWindow):
         self._run_export(list(book_ids))
 
     def export_library(self):
-        options = ["Entire Library", "Currently Filtered Books"]
-        if self._selected_book_ids:
-            options.append(f"Selected Books ({len(self._selected_book_ids)})")
-        choice, ok = QInputDialog.getItem(
-            self, "Export Categories", "What would you like to export?", options, 0, editable=False
-        )
-        if not ok:
-            return
-        if choice.startswith("Entire"):
-            self._run_export(None)
-        elif choice.startswith("Currently"):
-            self._run_export([b["id"] for b in self._get_filtered_books()])
-        else:
-            self._run_export(list(self._selected_book_ids))
-
-    def _get_filtered_books(self):
-        """The books matching the current search/status/category/genre/
-        language filters, ignoring pagination -- used for "export currently
-        filtered books" so it exports everything the filter matches, not
-        just whatever page happens to be showing."""
-        sort_by, descending = SORT_OPTIONS[self.sort_combo.currentIndex()]
-        search = self.search_box.text().strip() or None
-        status_filter = self.status_filter_combo.currentData()
-        return self.db.get_books(
-            favorites_only=self.show_favorites_only,
-            search=search,
-            sort_by=sort_by,
-            descending=descending,
-            status=status_filter,
-            category_id=self.selected_category_id,
-            genres=list(self.selected_genres) if self.selected_genres else None,
-            languages=list(self.selected_languages) if self.selected_languages else None,
-        )
+        """Export every categorized book in the library. (For a narrower
+        export, right-click a specific category instead -- or select several
+        with Ctrl+click/Shift+click and use "Export N Categories..." from
+        their right-click menu.)"""
+        self._run_export(None)
 
     def _run_export(self, book_ids):
         data = build_export_data(self.db, book_ids)
@@ -1211,6 +1183,12 @@ class LibraryWindow(QMainWindow):
             self.refresh_library(show_feedback=False)
 
     def refresh_list(self):
+        # Preserve scroll position across the rebuild below -- otherwise
+        # selecting a book, toggling a favorite, or any other small action
+        # would silently jump you back to the top of a long list.
+        list_scroll = self.list_widget.verticalScrollBar().value()
+        grid_scroll = self.grid_scroll.verticalScrollBar().value()
+
         sort_by, descending = SORT_OPTIONS[self.sort_combo.currentIndex()]
         search = self.search_box.text().strip() or None
         status_filter = self.status_filter_combo.currentData()
@@ -1278,6 +1256,15 @@ class LibraryWindow(QMainWindow):
             self._render_grid(books, sort_by)
         else:
             self._render_list(books)
+
+        # Deferred: the scrollbar's range isn't recomputed synchronously
+        # right after rebuilding the content, so restoring immediately would
+        # often just get clamped back to 0. Let the new layout settle first.
+        QTimer.singleShot(0, lambda: self._restore_scroll_position(list_scroll, grid_scroll))
+
+    def _restore_scroll_position(self, list_scroll, grid_scroll):
+        self.list_widget.verticalScrollBar().setValue(list_scroll)
+        self.grid_scroll.verticalScrollBar().setValue(grid_scroll)
 
     def _compute_letter_page_map(self, books, per_page):
         """For alphabetical sort: which page (1-indexed) each letter's first
@@ -1405,9 +1392,11 @@ class LibraryWindow(QMainWindow):
 
         self._letter_headers = {}
         is_alpha_sort = sort_by == "title"
-        # The two bars are mutually exclusive -- Genre/Language filter mode
-        # always takes over that space, regardless of sort.
-        self.alpha_bar_top.setVisible(is_alpha_sort and not self.genre_lang_filter_mode)
+        # Both bars can show at once now -- the A-Z index (only meaningful
+        # under Title sort) stays on top, with the Genre/Language filter bar
+        # underneath it when that's turned on, so a large library sorted
+        # alphabetically can still be narrowed by genre/language too.
+        self.alpha_bar_top.setVisible(is_alpha_sort)
         self.genre_lang_bar.setVisible(self.genre_lang_filter_mode)
 
         if is_alpha_sort:
