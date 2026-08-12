@@ -53,6 +53,24 @@ BookCard[selected="true"], CoverCell[selected="true"] {
     background-color: rgba(40, 120, 255, 70);
     border: 2px solid rgba(20, 90, 220, 220);
 }
+QMenu {
+    background-color: #ffffff;
+    border: 1px solid #c9c9c9;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 6px 24px 6px 12px;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background-color: #cfe4ff;
+    color: #202020;
+}
+QMenu::separator {
+    height: 1px;
+    background: #dcdcdc;
+    margin: 4px 6px;
+}
 """
 
 DARK_THEME = """
@@ -109,5 +127,23 @@ BookCard:hover, CoverCell:hover {
 BookCard[selected="true"], CoverCell[selected="true"] {
     background-color: rgba(60, 140, 255, 90);
     border: 2px solid rgba(90, 160, 255, 230);
+}
+QMenu {
+    background-color: #2a2a2a;
+    border: 1px solid #454545;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 6px 24px 6px 12px;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background-color: #2f5378;
+    color: #e0e0e0;
+}
+QMenu::separator {
+    height: 1px;
+    background: #454545;
+    margin: 4px 6px;
 }
 """

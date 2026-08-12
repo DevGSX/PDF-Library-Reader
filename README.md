@@ -147,14 +147,21 @@ and a distraction-free "simple text" reading mode.
   or bulk-exporting several categories at once via the right-click menu
   (a plain click still just filters by that one category, as before).
 
-  **Export.../Import...** in the toolbar are now dropdown menus with three
-  scoped options each:
+  **Export.../Import...** in the toolbar are now dropdown menus with four
+  scoped options on Export (Import stays generic — it reads whatever's in
+  the file, however it was scoped at export time):
   - **Full Archive** — a ZIP containing the actual PDF files plus a
     manifest of everything that isn't already encoded in their filenames:
     categories, bookmarks, reading status, favorite, annotation, and
     reading progress. The real "move (or back up) my whole library" option
     — importing onto a fresh device with zero existing books extracts the
     PDFs and restores everything else automatically.
+  - **Selected Books** — the same as Full Archive (actual PDF files plus
+    all their metadata), but scoped to whatever you've currently selected
+    via **Select** mode (click, Ctrl+click, Shift+click for a range). The
+    natural way to share one book or a handful of them with someone else —
+    a categories/bookmarks-only export would be useless to them, since they
+    don't have those books yet.
   - **Categories Only** — a plain JSON file, matched by filename rather
     than exact path, moving just category memberships (and their favorite
     status). Since Title/Author/Series/Genre/Language already travel with
@@ -202,13 +209,8 @@ and a distraction-free "simple text" reading mode.
   both, or neither — whatever's comfortable.
 - **Simple text mode** — strips away the page layout and shows just the
   extracted text of the page, reflowed to your chosen font size — good for
-  text-heavy books, bad for pages that are mostly images/diagrams.
-- **Select and copy real text** — turn on **Select Text** and drag over the
-  rendered page to select and copy actual PDF text (not an image guess),
-  highlighted per-line like a real text editor. Copies to the clipboard
-  automatically, with a brief "✓ Copied N characters" confirmation; **Ctrl+C**
-  re-copies the last selection. Not needed (and disabled) in Simple Text
-  mode, since that already supports native selection directly.
+  text-heavy books, bad for pages that are mostly images/diagrams. Its text
+  can be selected and copied directly, like any normal text view.
 - **Two-Page View** — shows two pages side by side like a book spread,
   handy on a wide screen. Prev/Next, jumping to a specific page, and
   scrolling past the edge all move by the full spread rather than one page
@@ -276,7 +278,6 @@ deletes the underlying PDF file.
 | Ctrl + =       | Increase text size / zoom in  |
 | Ctrl + -       | Decrease text size / zoom out |
 | Ctrl + D       | Add a bookmark on this page   |
-| Ctrl + C       | Copy the last text selection (with Select Text on) |
 | Click + drag   | Pan around a zoomed-in page   |
 
 ## Book details panel

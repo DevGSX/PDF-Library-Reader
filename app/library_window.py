@@ -192,6 +192,9 @@ class LibraryWindow(QMainWindow):
         export_menu.addAction("Full Archive (PDFs + Categories + Bookmarks)...").triggered.connect(
             self.export_full_archive
         )
+        export_menu.addAction("Selected Books (PDFs + Categories + Bookmarks)...").triggered.connect(
+            self.export_selected_books_archive
+        )
         export_menu.addAction("Categories Only...").triggered.connect(self.export_library)
         export_menu.addAction("Bookmarks Only...").triggered.connect(self.export_bookmarks_only)
         export_button = QToolButton()
@@ -199,8 +202,9 @@ class LibraryWindow(QMainWindow):
         export_button.setPopupMode(QToolButton.InstantPopup)
         export_button.setMenu(export_menu)
         export_button.setToolTip(
-            "Back up your library, or just its categories or bookmarks, to a "
-            "file you can carry to another device"
+            "Back up your library (or just a selection, its categories, or "
+            "its bookmarks) to a file you can carry to another device or "
+            "send to someone else"
         )
         toolbar.addWidget(export_button)
 
@@ -820,14 +824,33 @@ class LibraryWindow(QMainWindow):
 
     # ------------- Full archive export / import -------------
     def export_full_archive(self):
-        manifest, filepaths = build_archive_manifest(self.db, None)
-        if not manifest["books"]:
+        self._run_full_archive_export(None, "Export Full Archive")
+
+    def export_selected_books_archive(self):
+        """Export just the currently selected books -- PDFs plus their
+        categories, bookmarks, and reading progress -- the natural way to
+        share a specific book or handful of books with someone else. A
+        categories/bookmarks-only export would be useless to them, since
+        they don't have those books yet."""
+        if not self._selected_book_ids:
             QMessageBox.information(
-                self, "Nothing to export", "Your library doesn't have any books yet.",
+                self, "No books selected",
+                "Turn on Select, then click (or Ctrl+click/Shift+click for "
+                "several) the books you want to export first.",
             )
             return
+        self._run_full_archive_export(list(self._selected_book_ids), "Export Selected Books")
+
+    def _run_full_archive_export(self, book_ids, dialog_title):
+        manifest, filepaths = build_archive_manifest(self.db, book_ids)
+        if not manifest["books"]:
+            QMessageBox.information(
+                self, "Nothing to export", "There's nothing to export.",
+            )
+            return
+        default_name = "library-backup.zip" if book_ids is None else "shared-books.zip"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Full Archive", os.path.expanduser("~/library-backup.zip"),
+            self, dialog_title, os.path.expanduser(f"~/{default_name}"),
             "ZIP archives (*.zip)",
         )
         if not path:

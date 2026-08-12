@@ -1,11 +1,10 @@
 """Reader window: renders PDF pages, and supports simple-text mode, bookmarks,
-text size / zoom, dark mode, text selection/copy, two-page view, and
-favoriting a book while reading it."""
+text size / zoom, dark mode, two-page view, and favoriting a book while
+reading it."""
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QApplication,
     QDockWidget,
     QInputDialog,
     QLabel,
@@ -29,70 +28,6 @@ MIN_ZOOM = 0.2
 MAX_ZOOM = 6.0
 VIEWPORT_MARGIN = 24  # px of breathing room so a fitted page never touches the edges
 PAGE_GAP = 12  # px between the two pages in Two-Page View
-
-
-class TextSelectionOverlay(QWidget):
-    """A transparent overlay sitting on top of the rendered page pixmap.
-    Only shown while "Select Text" mode is on -- lets you drag a rectangle
-    over the page, extracts the real underlying PDF text within it (not an
-    image guess), and highlights it per-line rather than as one blocky box.
-    Layered over the pixel-perfect rendered image rather than replacing it,
-    so visual fidelity (fonts, layout, embedded images) is unaffected."""
-
-    def __init__(self, reader, parent=None):
-        super().__init__(parent)
-        self.reader = reader
-        self.setCursor(Qt.IBeamCursor)
-        self._drag_start = None
-        self._drag_current = None
-        self._highlight_rects = []
-        self.hide()
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.LeftButton:
-            return
-        self._drag_start = event.position()
-        self._drag_current = event.position()
-        self._highlight_rects = []
-        self.update()
-
-    def mouseMoveEvent(self, event):
-        if self._drag_start is None:
-            return
-        self._drag_current = event.position()
-        self.update()
-
-    def mouseReleaseEvent(self, event):
-        if self._drag_start is None or event.button() != Qt.LeftButton:
-            return
-        end = event.position()
-        start = self._drag_start
-        self._drag_start = None
-        self._drag_current = None
-        self.reader.finish_text_selection(start, end)
-
-    def set_highlight_rects(self, rects):
-        self._highlight_rects = rects
-        self.update()
-
-    def clear(self):
-        self._drag_start = None
-        self._drag_current = None
-        self._highlight_rects = []
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        if self._drag_start is not None and self._drag_current is not None:
-            rect = QRectF(self._drag_start, self._drag_current).normalized()
-            painter.setBrush(QColor(60, 120, 255, 60))
-            painter.setPen(QColor(40, 90, 220, 180))
-            painter.drawRect(rect)
-        painter.setBrush(QColor(255, 220, 0, 90))
-        painter.setPen(Qt.NoPen)
-        for r in self._highlight_rects:
-            painter.drawRect(r)
-        painter.end()
 
 
 class ReaderWindow(QMainWindow):
@@ -142,8 +77,6 @@ class ReaderWindow(QMainWindow):
         self._pan_start_h = 0
         self._pan_start_v = 0
 
-        self.select_text_mode = False
-        self._selected_text = ""
         self._current_render_zoom = 1.0
 
         self._build_ui()
@@ -236,17 +169,6 @@ class ReaderWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        self.select_text_btn = QPushButton("Select Text")
-        self.select_text_btn.setCheckable(True)
-        self.select_text_btn.clicked.connect(self.toggle_select_text_mode)
-        toolbar.addWidget(self.select_text_btn)
-
-        self.copy_feedback_label = QLabel("")
-        self.copy_feedback_label.setStyleSheet("color: #888; padding-left: 6px;")
-        toolbar.addWidget(self.copy_feedback_label)
-
-        toolbar.addSeparator()
-
         self.fav_btn = QPushButton(self._fav_label())
         self.fav_btn.setCheckable(True)
         self.fav_btn.setChecked(bool(self.book["is_favorite"]))
@@ -284,8 +206,6 @@ class ReaderWindow(QMainWindow):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setWidget(self.page_label)
-
-        self.text_overlay = TextSelectionOverlay(self, self.page_label)
 
         self.text_browser = QTextBrowser()
         self.text_browser.setReadOnly(True)
@@ -339,17 +259,6 @@ class ReaderWindow(QMainWindow):
     def _update_mode_visibility(self):
         self.scroll_area.setVisible(not self.simple_text_mode)
         self.text_browser.setVisible(self.simple_text_mode)
-        # Simple Text mode already supports selecting/copying its text
-        # natively (it's a plain QTextBrowser) -- our custom drag-select
-        # overlay only applies to the rendered page image.
-        self.select_text_btn.setEnabled(not self.simple_text_mode)
-        self.select_text_btn.setToolTip(
-            "Text in Simple Text mode can already be selected and copied directly"
-            if self.simple_text_mode else
-            "Drag over text on the page to select and copy it"
-        )
-        if self.simple_text_mode:
-            self.text_overlay.hide()
         # Two-Page View is a rendered-image concept, so it doesn't apply to
         # Simple Text mode's plain extracted text either.
         self.two_page_btn.setEnabled(not self.simple_text_mode)
@@ -422,7 +331,10 @@ class ReaderWindow(QMainWindow):
         fmt = QImage.Format_RGB888 if pix.n < 4 else QImage.Format_RGBA8888
         image = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt)
         self.page_label.setPixmap(QPixmap.fromImage(image.copy()))
-        self._sync_overlay_geometry(pix.width, pix.height)
+        # Deferred: the scroll area's scrollbar range isn't updated synchronously
+        # after setPixmap(), so evaluating "is this scrollable" has to wait for
+        # the pending layout pass to actually finish.
+        QTimer.singleShot(0, self._update_pan_cursor)
 
     def _render_two_page_spread(self):
         left_idx = self._pair_start(self.current_page)
@@ -458,18 +370,7 @@ class ReaderWindow(QMainWindow):
         painter.end()
 
         self.page_label.setPixmap(QPixmap.fromImage(combined))
-        self._sync_overlay_geometry(total_w, total_h)
-
-    def _sync_overlay_geometry(self, width, height):
-        # The overlay is a child of page_label -- keep it exactly matching
-        # the pixmap's size so drag coordinates map correctly to the page.
-        self.text_overlay.setGeometry(0, 0, width, height)
-        self.text_overlay.raise_()
-        self.text_overlay.clear()  # a new page/zoom/spread invalidates any old highlight
-        self._selected_text = ""
-        # Deferred: the scroll area's scrollbar range isn't updated synchronously
-        # after setPixmap(), so evaluating "is this scrollable" has to wait for
-        # the pending layout pass to actually finish.
+        # Deferred: see the comment in _render_single_page above.
         QTimer.singleShot(0, self._update_pan_cursor)
 
     # ------------- Navigation -------------
@@ -483,11 +384,6 @@ class ReaderWindow(QMainWindow):
             return
         if event.key() == Qt.Key_Right:
             self.next_page()
-            event.accept()
-            return
-        if event.matches(QKeySequence.Copy) and self._selected_text:
-            QApplication.clipboard().setText(self._selected_text)
-            self._flash_copy_feedback(len(self._selected_text))
             event.accept()
             return
         super().keyPressEvent(event)
@@ -708,62 +604,6 @@ class ReaderWindow(QMainWindow):
             # immediately, rather than the single page you happened to be on.
             self.current_page = self._pair_start(self.current_page)
         self.render_page()
-
-    # ------------- Text selection / copy -------------
-    def toggle_select_text_mode(self, checked):
-        self.select_text_btn.setChecked(checked)
-        self.select_text_mode = checked
-        self.text_overlay.setVisible(checked and not self.simple_text_mode)
-        if not checked:
-            self.text_overlay.clear()
-            self._update_pan_cursor()
-
-    def finish_text_selection(self, start_pos, end_pos):
-        if self.doc is None:
-            return
-        rect = QRectF(start_pos, end_pos).normalized()
-        if rect.width() < 3 and rect.height() < 3:
-            # Treat a near-zero-size drag as a click, not a real selection --
-            # clear any existing highlight rather than "select" a sliver.
-            self.text_overlay.set_highlight_rects([])
-            self._selected_text = ""
-            return
-
-        zoom = self._current_render_zoom or 1.0
-        pdf_rect = fitz.Rect(
-            rect.left() / zoom, rect.top() / zoom, rect.right() / zoom, rect.bottom() / zoom,
-        )
-        page = self.doc[self.current_page]
-        text = page.get_textbox(pdf_rect).strip()
-        self._selected_text = text
-
-        # Per-line highlight rectangles (grouped by PyMuPDF's block/line
-        # indices), so the highlight looks like real selected text rather
-        # than one blocky rectangle spanning the whole drag area.
-        highlight_rects = []
-        lines = {}
-        for x0, y0, x1, y1, word, block, line, word_no in page.get_text("words"):
-            word_rect = fitz.Rect(x0, y0, x1, y1)
-            if word_rect.intersects(pdf_rect):
-                lines.setdefault((block, line), []).append((x0, y0, x1, y1))
-        for boxes in lines.values():
-            min_x = min(b[0] for b in boxes) * zoom
-            min_y = min(b[1] for b in boxes) * zoom
-            max_x = max(b[2] for b in boxes) * zoom
-            max_y = max(b[3] for b in boxes) * zoom
-            highlight_rects.append(QRectF(min_x, min_y, max_x - min_x, max_y - min_y))
-        self.text_overlay.set_highlight_rects(highlight_rects)
-
-        if text:
-            QApplication.clipboard().setText(text)
-            self._flash_copy_feedback(len(text))
-        else:
-            self.copy_feedback_label.setText("No text found in that selection")
-            QTimer.singleShot(1800, lambda: self.copy_feedback_label.setText(""))
-
-    def _flash_copy_feedback(self, char_count):
-        self.copy_feedback_label.setText(f"\u2713 Copied {char_count} character{'s' if char_count != 1 else ''}")
-        QTimer.singleShot(1800, lambda: self.copy_feedback_label.setText(""))
 
     def toggle_favorite(self):
         self.db.toggle_favorite(self.book_id)
