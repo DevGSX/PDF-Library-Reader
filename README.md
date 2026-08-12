@@ -147,22 +147,30 @@ and a distraction-free "simple text" reading mode.
   or bulk-exporting several categories at once via the right-click menu
   (a plain click still just filters by that one category, as before).
 
-  **Export.../Import...** in the toolbar move categories (and their book
-  memberships) as a plain JSON file, matched by filename rather than exact
-  path — the natural way to carry your categories along when moving your
-  library to another device, since the books themselves (and their
-  Title/Author/Series/Genre/Language) already travel via copying the files
-  and don't need to be duplicated into the export. Only category data is
-  exported — nothing else needs to be. **Export** in the toolbar exports
-  your entire library's categories in one click; to export just one
-  category or a specific few, right-click a category (or Ctrl+click/
+  **Export.../Import...** in the toolbar are now dropdown menus with three
+  scoped options each:
+  - **Full Archive** — a ZIP containing the actual PDF files plus a
+    manifest of everything that isn't already encoded in their filenames:
+    categories, bookmarks, reading status, favorite, annotation, and
+    reading progress. The real "move (or back up) my whole library" option
+    — importing onto a fresh device with zero existing books extracts the
+    PDFs and restores everything else automatically.
+  - **Categories Only** — a plain JSON file, matched by filename rather
+    than exact path, moving just category memberships (and their favorite
+    status). Since Title/Author/Series/Genre/Language already travel with
+    the files themselves via their filenames, this stays deliberately
+    narrow.
+  - **Bookmarks Only** — the same idea, just for bookmarks.
+
+  For a narrower category export, right-click a category (or Ctrl+click/
   Shift+click to select several first) and choose **Export...** there
-  instead. Import matches books already in your library by filename and
-  reports how many matched vs. weren't found; re-importing the same file is
-  always safe (it won't create duplicate category memberships). This is
-  deliberately a manual, explicit action rather than an always-on
-  background sync, so two devices working from a shared/synced folder can't
-  silently overwrite each other's categories without you choosing to do it.
+  instead of the toolbar's whole-library version. Every import matches
+  books already in your library by filename and reports how many matched
+  vs. weren't found; re-importing the same file is always safe (nothing
+  gets duplicated). All of this is deliberately manual and explicit rather
+  than an always-on background sync, so two devices working from a
+  shared/synced folder can't silently overwrite each other's data without
+  you choosing to do it.
 - **Bookmarks** — save a bookmark (with an optional label) on any page inside
   a book, jump back to it later, remove it when you're done. The panel has
   its own "Bookmarks" toggle button next to "+ Bookmark" in the toolbar, so
@@ -195,6 +203,27 @@ and a distraction-free "simple text" reading mode.
 - **Simple text mode** — strips away the page layout and shows just the
   extracted text of the page, reflowed to your chosen font size — good for
   text-heavy books, bad for pages that are mostly images/diagrams.
+- **Select and copy real text** — turn on **Select Text** and drag over the
+  rendered page to select and copy actual PDF text (not an image guess),
+  highlighted per-line like a real text editor. Copies to the clipboard
+  automatically, with a brief "✓ Copied N characters" confirmation; **Ctrl+C**
+  re-copies the last selection. Not needed (and disabled) in Simple Text
+  mode, since that already supports native selection directly.
+- **Two-Page View** — shows two pages side by side like a book spread,
+  handy on a wide screen. Prev/Next, jumping to a specific page, and
+  scrolling past the edge all move by the full spread rather than one page
+  at a time. Not available in Simple Text mode.
+- **Password-protected PDFs** — opening one prompts for its password; a
+  correct one unlocks it for that session. The same dialog optionally lets
+  you permanently remove the password from the file, or change it to a new
+  one, right at the point of unlocking.
+- **Corrupted files are caught, not crashed on** — a file that can't
+  actually be opened gets a small red warning triangle on its cover in
+  Image Preview, and attempting to open it shows a clear "this file is
+  corrupted" message instead of an error dump. (A merely password-protected
+  file is treated as locked, not corrupted — very different situations.)
+- **Sort by Recently Added** — alongside Title, Recently Read, and File
+  Size, sort your library by when each book was added, most recent first.
 - **Reading progress** — automatically remembers the last page you were on
   for each book, so "Open" picks up where you left off.
 
@@ -247,6 +276,7 @@ deletes the underlying PDF file.
 | Ctrl + =       | Increase text size / zoom in  |
 | Ctrl + -       | Decrease text size / zoom out |
 | Ctrl + D       | Add a bookmark on this page   |
+| Ctrl + C       | Copy the last text selection (with Select Text on) |
 | Click + drag   | Pan around a zoomed-in page   |
 
 ## Book details panel

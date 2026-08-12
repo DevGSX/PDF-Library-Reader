@@ -18,18 +18,25 @@ def thumbnail_path(book_id):
 
 
 def ensure_thumbnail(book_id, filepath):
-    """Return a QPixmap thumbnail of the book's first page.
+    """Return (QPixmap, is_corrupted).
 
     Generated once and cached to disk; later calls just load the cached file.
+    A password-protected file gets a plain placeholder (it isn't broken, just
+    locked) with is_corrupted=False. A file that genuinely can't be opened or
+    rendered at all gets is_corrupted=True, so the caller can show a warning
+    badge on it.
     """
     path = thumbnail_path(book_id)
     if path.exists():
         pix = QPixmap(str(path))
         if not pix.isNull():
-            return pix
+            return pix, False
 
     try:
         doc = fitz.open(filepath)
+        if doc.needs_pass:
+            doc.close()
+            return _placeholder(), False
         page = doc[0]
         rect = page.rect
         if rect.width <= 0 or rect.height <= 0:
@@ -40,9 +47,9 @@ def ensure_thumbnail(book_id, filepath):
         pix.save(str(path))
         doc.close()
         qpix = QPixmap(str(path))
-        return qpix if not qpix.isNull() else _placeholder()
+        return (qpix, False) if not qpix.isNull() else (_placeholder(), False)
     except Exception:
-        return _placeholder()
+        return _placeholder(), True
 
 
 def _placeholder():

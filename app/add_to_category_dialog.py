@@ -205,7 +205,7 @@ class AddToCategoryDialog(QDialog):
                     book = self.db.get_book(row["id"])
                     if not book:
                         continue
-                    pixmap = ensure_thumbnail(book["id"], book["filepath"])
+                    pixmap, _is_corrupted = ensure_thumbnail(book["id"], book["filepath"])
                     cell = _MiniCoverCell(book["id"], row["title"], pixmap)
                     cell.clicked.connect(
                         lambda bid: self._apply_payload(("title", bid, self.db.get_book(bid)["title"]))

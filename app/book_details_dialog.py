@@ -160,7 +160,7 @@ class BookDetailsDialog(QDialog):
             return
         self.setWindowTitle(f"Book Details \u2014 {book['title']}")
 
-        pixmap = ensure_thumbnail(book_id, book["filepath"])
+        pixmap, _is_corrupted = ensure_thumbnail(book_id, book["filepath"])
         self.cover_label.setPixmap(
             pixmap.scaled(140, 190, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -31,11 +32,20 @@ from PySide6.QtWidgets import (
 from .add_to_category_dialog import AddToCategoryDialog
 from .badges import decorate_thumbnail
 from .book_details_dialog import BookDetailsDialog
+from .bookmark_export import apply_import_data as apply_bookmark_import
+from .bookmark_export import build_export_data as build_bookmark_export
+from .bookmark_export import read_export_file as read_bookmark_export_file
+from .bookmark_export import write_export_file as write_bookmark_export_file
 from .category_export import apply_import_data, build_export_data, read_export_file, write_export_file
 from .database import Database
 from .file_naming import parse_filename, sync_filename
 from .flow_layout import FlowLayout
+from .full_archive import apply_archive as apply_full_archive
+from .full_archive import build_manifest as build_archive_manifest
+from .full_archive import read_manifest as read_archive_manifest
+from .full_archive import write_archive
 from .multi_select_combo import ClickToOpenComboBox, MultiSelectComboBox
+from .pdf_password import PasswordUnlockDialog, strip_or_change_password
 from .presets import GENRE_PRESETS, LANGUAGE_PRESETS
 from .reader_window import ReaderWindow
 from .search_dialog import TextSearchDialog
@@ -49,8 +59,9 @@ SORT_OPTIONS = {
     1: ("title", True),    # Title Z-A
     2: ("recent", True),   # Recently read first
     3: ("recent", False),  # Least recently read first
-    4: ("size", True),     # Largest file first
-    5: ("size", False),    # Smallest file first
+    4: ("added", True),    # Recently added first
+    5: ("size", True),     # Largest file first
+    6: ("size", False),    # Smallest file first
 }
 
 # index in the status filter combo -> status value passed to the database
@@ -177,18 +188,32 @@ class LibraryWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        export_action = QAction("Export...", self)
-        export_action.setToolTip(
-            "Export categories (with the books in them) to a JSON file -- "
-            "carry them along when moving books to another device"
+        export_menu = QMenu(self)
+        export_menu.addAction("Full Archive (PDFs + Categories + Bookmarks)...").triggered.connect(
+            self.export_full_archive
         )
-        export_action.triggered.connect(self.export_library)
-        toolbar.addAction(export_action)
+        export_menu.addAction("Categories Only...").triggered.connect(self.export_library)
+        export_menu.addAction("Bookmarks Only...").triggered.connect(self.export_bookmarks_only)
+        export_button = QToolButton()
+        export_button.setText("Export...")
+        export_button.setPopupMode(QToolButton.InstantPopup)
+        export_button.setMenu(export_menu)
+        export_button.setToolTip(
+            "Back up your library, or just its categories or bookmarks, to a "
+            "file you can carry to another device"
+        )
+        toolbar.addWidget(export_button)
 
-        import_action = QAction("Import...", self)
-        import_action.setToolTip("Import categories from a previously exported JSON file")
-        import_action.triggered.connect(self.import_library)
-        toolbar.addAction(import_action)
+        import_menu = QMenu(self)
+        import_menu.addAction("Full Archive...").triggered.connect(self.import_full_archive)
+        import_menu.addAction("Categories Only...").triggered.connect(self.import_library)
+        import_menu.addAction("Bookmarks Only...").triggered.connect(self.import_bookmarks_only)
+        import_button = QToolButton()
+        import_button.setText("Import...")
+        import_button.setPopupMode(QToolButton.InstantPopup)
+        import_button.setMenu(import_menu)
+        import_button.setToolTip("Restore a previously exported archive, categories, or bookmarks file")
+        toolbar.addWidget(import_button)
 
         toolbar.addSeparator()
 
@@ -238,6 +263,7 @@ class LibraryWindow(QMainWindow):
                 "Title (Z-A)",
                 "Recently Read",
                 "Oldest Read",
+                "Recently Added",
                 "File Size (Largest)",
                 "File Size (Smallest)",
             ]
@@ -747,6 +773,104 @@ class LibraryWindow(QMainWindow):
             f"Created {n_created} new categor{'y' if n_created == 1 else 'ies'}.",
         )
 
+    # ------------- Bookmarks-only export / import -------------
+    def export_bookmarks_only(self):
+        data = build_bookmark_export(self.db, None)
+        if not data["books"]:
+            QMessageBox.information(
+                self, "Nothing to export", "No books have any bookmarks yet, so there's nothing to export.",
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Bookmarks", os.path.expanduser("~/library-bookmarks.json"),
+            "JSON files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            write_bookmark_export_file(path, data)
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Couldn't write the export file:\n{exc}")
+            return
+        n_books = len(data["books"])
+        QMessageBox.information(
+            self, "Export complete",
+            f"Exported bookmarks for {n_books} book{'s' if n_books != 1 else ''} to:\n{path}",
+        )
+
+    def import_bookmarks_only(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Bookmarks", os.path.expanduser("~"), "JSON files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            data = read_bookmark_export_file(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Import failed", f"Couldn't read that file:\n{exc}")
+            return
+        summary = apply_bookmark_import(self.db, data)
+        self.refresh_list()
+        QMessageBox.information(
+            self, "Import complete",
+            f"Matched {summary['matched']} book(s) already in your library.\n"
+            f"Skipped {summary['skipped']} book(s) not found here.\n"
+            f"Added {summary['bookmarks_added']} new bookmark(s).",
+        )
+
+    # ------------- Full archive export / import -------------
+    def export_full_archive(self):
+        manifest, filepaths = build_archive_manifest(self.db, None)
+        if not manifest["books"]:
+            QMessageBox.information(
+                self, "Nothing to export", "Your library doesn't have any books yet.",
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Full Archive", os.path.expanduser("~/library-backup.zip"),
+            "ZIP archives (*.zip)",
+        )
+        if not path:
+            return
+        try:
+            skipped = write_archive(path, manifest, filepaths)
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Couldn't write the archive:\n{exc}")
+            return
+        n_books = len(manifest["books"]) - len(skipped)
+        msg = f"Exported {n_books} book(s) (with categories, bookmarks, and reading progress) to:\n{path}"
+        if skipped:
+            msg += f"\n\n{len(skipped)} book(s) were skipped because their file couldn't be found on disk."
+        QMessageBox.information(self, "Export complete", msg)
+
+    def import_full_archive(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Full Archive", os.path.expanduser("~"), "ZIP archives (*.zip)"
+        )
+        if not path:
+            return
+        destination = QFileDialog.getExistingDirectory(
+            self, "Choose a folder to save any new books into", os.path.expanduser("~"),
+        )
+        if not destination:
+            return
+        try:
+            summary = apply_full_archive(self.db, path, destination)
+        except (OSError, KeyError, ValueError) as exc:
+            QMessageBox.critical(self, "Import failed", f"Couldn't read that archive:\n{exc}")
+            return
+        self.refresh_categories_sidebar()
+        self.refresh_list()
+        n_created = summary["categories_created"]
+        QMessageBox.information(
+            self, "Import complete",
+            f"Added {summary['added']} new book(s) to your library.\n"
+            f"Matched {summary['matched']} book(s) total (new + already present).\n"
+            f"Skipped {summary['skipped']} book(s) missing from the archive.\n"
+            f"Added {summary['bookmarks_added']} new bookmark(s), "
+            f"created {n_created} new categor{'y' if n_created == 1 else 'ies'}.",
+        )
+
     # ------------- Multi-select & bulk actions -------------
     def toggle_book_selection(self, book_id):
         # Deferred: this is called synchronously from within the clicked
@@ -1078,7 +1202,7 @@ class LibraryWindow(QMainWindow):
             pass  # page_count stays 0; title still comes from the filename
 
         book = self.db.add_book(abs_path, parsed["title"], page_count)
-        if book and is_new_book and (parsed["author"] or parsed["series"] or parsed["genre"]):
+        if book and is_new_book and (parsed["author"] or parsed["series"] or parsed["genre"] or parsed["language"]):
             # Only backfill these for a genuinely new import -- never overwrite
             # metadata someone already edited by hand on a book already in the library.
             self.db.update_metadata(
@@ -1086,6 +1210,7 @@ class LibraryWindow(QMainWindow):
                 author=parsed["author"],
                 series=parsed["series"],
                 genre=parsed["genre"],
+                language=parsed["language"],
             )
 
     def set_favorites_filter(self, favorites_only):
@@ -1467,8 +1592,10 @@ class LibraryWindow(QMainWindow):
         group_widget = QWidget()
         flow = FlowLayout(group_widget, margin=0, hspacing=14, vspacing=14)
         for book in books:
-            pixmap = ensure_thumbnail(book["id"], book["filepath"])
-            pixmap = decorate_thumbnail(pixmap, book.get("status") or "unread", bool(book.get("is_favorite")))
+            pixmap, is_corrupted = ensure_thumbnail(book["id"], book["filepath"])
+            pixmap = decorate_thumbnail(
+                pixmap, book.get("status") or "unread", bool(book.get("is_favorite")), is_corrupted
+            )
             cell = CoverCell(
                 book,
                 pixmap,
@@ -1545,7 +1672,7 @@ class LibraryWindow(QMainWindow):
             QTimer.singleShot(0, self.refresh_list)
             QTimer.singleShot(0, self.refresh_categories_sidebar)
 
-    def open_book(self, book_id):
+    def open_book(self, book_id, password=None):
         book = self.db.get_book(book_id)
         if not book:
             return
@@ -1559,6 +1686,51 @@ class LibraryWindow(QMainWindow):
             existing.activateWindow()
             return
 
-        win = ReaderWindow(self.db, book_id, on_close=self.refresh_list)
+        # Pre-check before actually opening the reader: distinguish a
+        # genuinely corrupted file (can't be opened at all) from one that's
+        # simply password-protected (opens fine once unlocked), and give a
+        # clear message for the former instead of a cryptic failure.
+        try:
+            probe = fitz.open(book["filepath"])
+        except Exception:
+            QMessageBox.critical(
+                self, "File is corrupted",
+                f"\u201c{book['title']}\u201d is corrupted and cannot be opened.",
+            )
+            self.refresh_list()  # so the corrupted-file badge appears on its cover
+            return
+
+        needs_pass = probe.needs_pass
+        if needs_pass and password:
+            unlocked = probe.authenticate(password) != 0
+        else:
+            unlocked = not needs_pass
+        probe.close()
+
+        if needs_pass and not unlocked:
+            dialog = PasswordUnlockDialog(os.path.basename(book["filepath"]), self)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            entered = dialog.password()
+
+            verify = fitz.open(book["filepath"])
+            correct = verify.authenticate(entered) != 0
+            verify.close()
+            if not correct:
+                QMessageBox.warning(self, "Incorrect password", "That password didn't work.")
+                return
+
+            if dialog.wants_remove() or dialog.wants_change():
+                new_pw = dialog.new_password() if dialog.wants_change() else None
+                ok, err = strip_or_change_password(book["filepath"], entered, new_pw)
+                if not ok:
+                    QMessageBox.critical(self, "Couldn't update password", err)
+                    # Still proceed to open it with the password that DID work.
+                elif new_pw:
+                    entered = new_pw  # the file now needs the NEW password, not the old one
+
+            password = entered
+
+        win = ReaderWindow(self.db, book_id, on_close=self.refresh_list, password=password)
         self.reader_windows[book_id] = win
         win.show()

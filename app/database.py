@@ -169,6 +169,7 @@ class Database:
         key_map = {
             "title": lambda r: r["title"].lower(),
             "recent": lambda r: r["last_opened"] or "",
+            "added": lambda r: r["added_date"] or "",
             "size": lambda r: r["file_size"],
         }
         rows.sort(key=key_map.get(sort_by, key_map["title"]), reverse=descending)
