@@ -1,6 +1,7 @@
 """Main library window: browse, search, sort, filter, favorite, categorize,
 and open PDF books."""
 import os
+import shutil
 from collections import OrderedDict
 
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
@@ -105,7 +106,9 @@ class LibraryWindow(QMainWindow):
         self.genre_lang_filter_mode = False  # when on, replaces the A-Z bar with genre/language filters
         self.selected_genres = set()
         self.selected_languages = set()
-        self._missing_book_ids = set()  # books whose file wasn't found on disk at last sync
+        self._missing_book_ids = set()  # books flagged at last sync -- gone, or outside the library folder
+        self._truly_missing_book_ids = set()  # subset of the above: file not found on disk at all
+        self._relocatable_book_ids = set()  # subset of the above: file exists, just outside the library folder
 
         self._build_ui()
         self._apply_theme(self.db.get_setting("theme", "light"))
@@ -126,6 +129,14 @@ class LibraryWindow(QMainWindow):
         add_folder_action = QAction("Add Folder", self)
         add_folder_action.triggered.connect(self.add_folder)
         toolbar.addAction(add_folder_action)
+
+        library_folder_action = QAction("Library Folder...", self)
+        library_folder_action.setToolTip(
+            "Choose a folder for \"Add Book(s)\" and \"Add Folder\" to move new "
+            "books into, so your whole library lives in one place"
+        )
+        library_folder_action.triggered.connect(self.choose_library_folder)
+        toolbar.addAction(library_folder_action)
 
         toolbar.addSeparator()
 
@@ -1203,12 +1214,45 @@ class LibraryWindow(QMainWindow):
             QTimer.singleShot(0, self.refresh_categories_sidebar)
 
     # ------------- Actions -------------
+    def choose_library_folder(self):
+        current = self.db.get_setting("library_folder") or ""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Library Folder")
+        if current:
+            msg.setText(
+                "New books added via \u201cAdd Book(s)\u201d or \u201cAdd Folder\u201d "
+                f"are moved into:\n\n{current}"
+            )
+        else:
+            msg.setText(
+                "No library folder is set, so new books stay wherever you "
+                "originally select them from.\n\nSet one to have \u201cAdd "
+                "Book(s)\u201d and \u201cAdd Folder\u201d automatically move new "
+                "books into a single folder."
+            )
+        change_btn = msg.addButton("Change...", QMessageBox.ActionRole)
+        clear_btn = msg.addButton("Clear", QMessageBox.DestructiveRole) if current else None
+        msg.addButton(QMessageBox.Close)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked is change_btn:
+            folder = QFileDialog.getExistingDirectory(
+                self, "Select library folder", current or os.path.expanduser("~")
+            )
+            if folder:
+                self.db.set_setting("library_folder", os.path.abspath(folder))
+                self.refresh_library()
+        elif clear_btn is not None and clicked is clear_btn:
+            self.db.set_setting("library_folder", "")
+            self.refresh_library()
+
     def add_books(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Select PDF files", os.path.expanduser("~"), "PDF files (*.pdf)"
         )
         for path in paths:
-            self._import_pdf(path)
+            self._import_pdf(self._move_into_library_folder(path))
         self.refresh_list()
 
     def add_folder(self):
@@ -1219,10 +1263,48 @@ class LibraryWindow(QMainWindow):
         for root, _, files in os.walk(folder):
             for f in files:
                 if f.lower().endswith(".pdf"):
-                    self._import_pdf(os.path.join(root, f))
+                    path = self._move_into_library_folder(os.path.join(root, f))
+                    self._import_pdf(path)
                     count += 1
         self.refresh_list()
         QMessageBox.information(self, "Import complete", f"Added {count} PDF file(s).")
+
+    def _move_into_library_folder(self, path):
+        """If a library folder is configured, move `path` into it (flat --
+        no subfolders preserved) and return the new location. Returns the
+        original path unchanged if no library folder is set, the file is
+        already directly inside it, or the move can't be completed for any
+        reason (so a book is never lost, just left where it was)."""
+        folder = self.db.get_setting("library_folder")
+        if not folder or not os.path.isdir(folder):
+            return path
+        abs_path = os.path.abspath(path)
+        abs_folder = os.path.abspath(folder)
+        if os.path.dirname(abs_path) == abs_folder:
+            return abs_path  # already there
+
+        dest = os.path.join(abs_folder, os.path.basename(abs_path))
+        dest = self._unique_destination(dest)
+        try:
+            shutil.move(abs_path, dest)
+            return dest
+        except OSError:
+            return abs_path
+
+    @staticmethod
+    def _unique_destination(dest):
+        """Appends ' (1)', ' (2)', etc. before the extension if something
+        already occupies `dest`, so an unrelated same-named file already in
+        the library folder is never silently overwritten."""
+        if not os.path.exists(dest):
+            return dest
+        base, ext = os.path.splitext(dest)
+        n = 1
+        while True:
+            candidate = f"{base} ({n}){ext}"
+            if not os.path.exists(candidate):
+                return candidate
+            n += 1
 
     def _import_pdf(self, path):
         abs_path = os.path.abspath(path)
@@ -1293,9 +1375,30 @@ class LibraryWindow(QMainWindow):
         QTimer.singleShot(1200, lambda: self.refresh_action.setText("Refresh"))
 
     def _sync_missing_files(self):
-        self._missing_book_ids = {
-            book["id"] for book in self.db.get_books() if not os.path.exists(book["filepath"])
-        }
+        """A book is flagged -- hidden from the main list, surfaced via the
+        missing-files indicator -- if its file is outright gone, OR (when a
+        library folder is configured) if it still exists but sits somewhere
+        other than that folder. The two cases get different resolutions
+        (move vs. remove), so they're tracked separately even though both
+        feed into the same _missing_book_ids the rest of the UI checks."""
+        library_folder = self.db.get_setting("library_folder")
+        abs_library_folder = (
+            os.path.abspath(library_folder)
+            if library_folder and os.path.isdir(library_folder) else None
+        )
+
+        gone = set()
+        outside_folder = set()
+        for book in self.db.get_books():
+            filepath = book["filepath"]
+            if not os.path.exists(filepath):
+                gone.add(book["id"])
+            elif abs_library_folder and os.path.dirname(os.path.abspath(filepath)) != abs_library_folder:
+                outside_folder.add(book["id"])
+
+        self._truly_missing_book_ids = gone
+        self._relocatable_book_ids = outside_folder
+        self._missing_book_ids = gone | outside_folder
         self._update_missing_files_indicator()
 
     def _update_missing_files_indicator(self):
@@ -1303,34 +1406,35 @@ class LibraryWindow(QMainWindow):
         self.missing_files_btn.setVisible(n > 0)
         if n > 0:
             self.missing_files_btn.setText(
-                f"\u26a0 {n} book{'s' if n != 1 else ''} missing (renamed or moved "
-                f"outside the app) \u2014 click for details"
+                f"\u26a0 {n} book{'s' if n != 1 else ''} need attention "
+                f"(missing, or outside your library folder) \u2014 click for details"
             )
 
     def _show_missing_files_dialog(self):
-        missing_books = [b for b in (self.db.get_book(bid) for bid in self._missing_book_ids) if b]
-        if not missing_books:
+        books = [b for b in (self.db.get_book(bid) for bid in self._missing_book_ids) if b]
+        if not books:
             return
-        missing_books.sort(key=lambda b: b["title"].lower())
+        books.sort(key=lambda b: b["title"].lower())
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Missing Books")
-        dialog.resize(480, 360)
+        dialog.setWindowTitle("Books Needing Attention")
+        dialog.resize(520, 380)
         layout = QVBoxLayout(dialog)
 
         hint = QLabel(
-            "These books' files weren't found where the library expects them "
-            "\u2014 likely renamed or moved outside the app, or on a drive "
-            "that isn't connected right now. They're hidden from the library "
-            "until their file turns up again at the next refresh (F5), or "
-            "you can remove their entries below if they're gone for good."
+            "These books are hidden from your library until resolved. Some "
+            "weren't found on disk at all \u2014 likely renamed or moved "
+            "outside the app, or on a drive that isn't connected right now. "
+            "Others still exist but sit outside your configured library "
+            "folder."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
         list_widget = QListWidget()
-        for book in missing_books:
-            list_widget.addItem(QListWidgetItem(f"{book['title']} \u2014 {book['filepath']}"))
+        for book in books:
+            tag = "missing" if book["id"] in self._truly_missing_book_ids else "outside library folder"
+            list_widget.addItem(QListWidgetItem(f"{book['title']} \u2014 [{tag}] {book['filepath']}"))
         layout.addWidget(list_widget)
 
         btn_row = QHBoxLayout()
@@ -1338,13 +1442,38 @@ class LibraryWindow(QMainWindow):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dialog.close)
         btn_row.addWidget(close_btn)
-        book_ids = [b["id"] for b in missing_books]
-        remove_btn = QPushButton(f"Remove All {len(book_ids)} from Library")
-        remove_btn.clicked.connect(lambda: self._remove_missing_books(dialog, book_ids))
-        btn_row.addWidget(remove_btn)
-        layout.addLayout(btn_row)
 
+        relocatable_ids = [b["id"] for b in books if b["id"] in self._relocatable_book_ids]
+        if relocatable_ids:
+            move_btn = QPushButton(f"Move {len(relocatable_ids)} Into Library Folder")
+            move_btn.clicked.connect(lambda: self._move_missing_books(dialog, relocatable_ids))
+            btn_row.addWidget(move_btn)
+
+        missing_ids = [b["id"] for b in books if b["id"] in self._truly_missing_book_ids]
+        if missing_ids:
+            remove_btn = QPushButton(f"Remove {len(missing_ids)} Missing From Library")
+            remove_btn.clicked.connect(lambda: self._remove_missing_books(dialog, missing_ids))
+            btn_row.addWidget(remove_btn)
+
+        layout.addLayout(btn_row)
         dialog.exec()
+
+    def _move_missing_books(self, dialog, book_ids):
+        moved = 0
+        for book_id in book_ids:
+            book = self.db.get_book(book_id)
+            if not book or not os.path.exists(book["filepath"]):
+                continue  # disappeared between opening the dialog and clicking Move
+            new_path = self._move_into_library_folder(book["filepath"])
+            if os.path.abspath(new_path) != os.path.abspath(book["filepath"]):
+                self.db.update_filepath(book_id, new_path)
+                moved += 1
+        dialog.close()
+        self.refresh_library(show_feedback=False)
+        QMessageBox.information(
+            self, "Move complete", f"Moved {moved} book(s) into your library folder."
+        )
+
 
     def _remove_missing_books(self, dialog, book_ids):
         reply = QMessageBox.question(
