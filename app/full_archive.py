@@ -68,18 +68,29 @@ def build_manifest(db, book_ids=None, include_reading_state=True):
     return manifest, filepaths
 
 
-def write_archive(zip_path, manifest, filepaths):
+def write_archive(zip_path, manifest, filepaths, progress_callback=None):
     """Writes manifest.json plus every PDF (under books/) into the zip.
     Returns a list of filenames that were skipped because their source file
-    no longer existed on disk at export time."""
+    no longer existed on disk at export time.
+
+    If given, progress_callback(index, total, filename) is called after each
+    file is handled (index starting at 1) -- copying many/large PDFs into a
+    zip can take a while, so a caller can use this to drive a progress
+    dialog instead of leaving the UI looking frozen. Raising an exception
+    from the callback (e.g. to signal the user cancelled) aborts the write;
+    the zip file will exist but be incomplete, so callers doing that should
+    delete it afterward."""
     skipped = []
+    total = len(filepaths)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, ensure_ascii=False))
-        for filename, source_path in filepaths.items():
+        for i, (filename, source_path) in enumerate(filepaths.items(), start=1):
             if not os.path.exists(source_path):
                 skipped.append(filename)
-                continue
-            zf.write(source_path, arcname=f"{BOOKS_DIR}/{filename}")
+            else:
+                zf.write(source_path, arcname=f"{BOOKS_DIR}/{filename}")
+            if progress_callback:
+                progress_callback(i, total, filename)
     return skipped
 
 

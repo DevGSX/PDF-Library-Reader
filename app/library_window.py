@@ -9,6 +9,7 @@ from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QToolBar,
@@ -75,6 +77,12 @@ STATUS_FILTER_OPTIONS = [
 ]
 
 ALPHABET_INDEX = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["#"]
+
+
+class _ExportCancelledError(Exception):
+    """Raised from a write_archive progress callback to abort a
+    still-in-progress export when the user clicks Cancel on the progress
+    dialog."""
 
 
 def _group_letter(title):
@@ -201,15 +209,20 @@ class LibraryWindow(QMainWindow):
         toolbar.addSeparator()
 
         export_menu = QMenu(self)
-        export_menu.addAction("Full Archive (PDFs + Categories + Bookmarks)...").triggered.connect(
-            self.export_full_archive
-        )
-        export_menu.addAction("Selected Books (PDFs + Categories + Bookmarks)...").triggered.connect(
-            self.export_selected_books_archive
-        )
         export_menu.addAction(
-            "Share Selected Books (PDFs + Categories + Bookmarks, no reading data)..."
-        ).triggered.connect(self.export_selected_books_share)
+            "Share Full Archive (PDFs + Categories + Bookmarks)..."
+        ).triggered.connect(self.export_share_full_archive)
+        export_menu.addAction(
+            "Share Selected Books (PDFs + Categories + Bookmarks)..."
+        ).triggered.connect(lambda: self.export_selected_books_share())
+        export_menu.addSeparator()
+        export_menu.addAction(
+            "Full Export (PDFs + Categories + Bookmarks + Reading Data)..."
+        ).triggered.connect(self.export_full_archive)
+        export_menu.addAction(
+            "Selected Books Export (PDFs + Categories + Bookmarks + Reading Data)..."
+        ).triggered.connect(lambda: self.export_selected_books_archive())
+        export_menu.addSeparator()
         export_menu.addAction("Categories Only...").triggered.connect(self.export_library)
         export_menu.addAction("Bookmarks Only...").triggered.connect(self.export_bookmarks_only)
         export_button = QToolButton()
@@ -766,10 +779,6 @@ class LibraryWindow(QMainWindow):
         )
         return True
 
-    def _export_selected_books(self, book_ids, clear_selection_after=False):
-        if self._run_export(list(book_ids)) and clear_selection_after:
-            self.clear_selection()
-
     def import_library(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Import Categories", os.path.expanduser("~"), "JSON files (*.json)"
@@ -839,44 +848,65 @@ class LibraryWindow(QMainWindow):
 
     # ------------- Full archive export / import -------------
     def export_full_archive(self):
-        self._run_full_archive_export(None, "Export Full Archive")
+        """Full Export: every book in your library, with categories,
+        bookmarks, and your own reading progress (status, favorite,
+        last page read). Best for backing up your whole library or moving
+        it to another machine of your own."""
+        self._run_full_archive_export(None, "Full Export", include_reading_state=True)
 
-    def export_selected_books_archive(self):
-        """Export just the currently selected books -- PDFs plus their
-        categories, bookmarks, and your own reading progress (status,
-        favorite, last page read). Best for backing up a subset of your
+    def export_share_full_archive(self):
+        """Share Full Archive: every book in your library, with categories
+        and bookmarks, but not your own reading progress -- so whoever
+        you're handing this to gets a clean copy instead of books that show
+        up mysteriously pre-favorited or already marked Finished."""
+        self._run_full_archive_export(None, "Share Full Archive", include_reading_state=False)
+
+    def export_selected_books_archive(self, book_ids=None, clear_selection_after=False):
+        """Selected Books Export: just the given books (or the current
+        selection, if book_ids isn't passed) -- categories, bookmarks, and
+        your own reading progress. Best for backing up a subset of your
         library or moving it to another machine of your own, since that
         reading state is exactly what you'd want restored. For sending
-        books to someone else, use "Share Selected Books" instead --
-        imposing your reading progress and favorites on their copy would
-        just be confusing for them."""
-        if not self._selected_book_ids:
+        books to someone else, use "Share Selected Books" instead."""
+        book_ids = list(book_ids) if book_ids is not None else list(self._selected_book_ids)
+        if not book_ids:
             QMessageBox.information(
                 self, "No books selected",
                 "Turn on Select, then click (or Ctrl+click/Shift+click for "
                 "several) the books you want to export first.",
             )
             return
-        self._run_full_archive_export(list(self._selected_book_ids), "Export Selected Books")
+        success = self._run_full_archive_export(
+            book_ids, "Selected Books Export", include_reading_state=True
+        )
+        if success and clear_selection_after:
+            self.clear_selection()
 
-    def export_selected_books_share(self):
-        """Same as export_selected_books_archive, but for handing books to
-        someone else: PDFs, categories, and bookmarks travel over, but not
-        your own status/favorite/last-page -- so their copy starts clean
-        instead of showing up mysteriously pre-favorited or already marked
-        Finished."""
-        if not self._selected_book_ids:
+    def export_selected_books_share(self, book_ids=None, clear_selection_after=False):
+        """Share Selected Books: just the given books (or the current
+        selection, if book_ids isn't passed) -- categories and bookmarks
+        travel over, but not your own status/favorite/last-page -- so their
+        copy starts clean."""
+        book_ids = list(book_ids) if book_ids is not None else list(self._selected_book_ids)
+        if not book_ids:
             QMessageBox.information(
                 self, "No books selected",
                 "Turn on Select, then click (or Ctrl+click/Shift+click for "
                 "several) the books you want to share first.",
             )
             return
-        self._run_full_archive_export(
-            list(self._selected_book_ids), "Share Selected Books", include_reading_state=False
+        success = self._run_full_archive_export(
+            book_ids, "Share Selected Books", include_reading_state=False
         )
+        if success and clear_selection_after:
+            self.clear_selection()
 
     def _run_full_archive_export(self, book_ids, dialog_title, include_reading_state=True):
+        """Returns True once the export actually completes, False if there
+        was nothing to export, the save dialog was canceled, the write
+        failed, or the user cancelled partway through -- used by callers
+        that only want to react (e.g. clear a selection) on genuine
+        success."""
         manifest, filepaths = build_archive_manifest(
             self.db, book_ids, include_reading_state=include_reading_state
         )
@@ -884,19 +914,47 @@ class LibraryWindow(QMainWindow):
             QMessageBox.information(
                 self, "Nothing to export", "There's nothing to export.",
             )
-            return
+            return False
         default_name = "library-backup.zip" if book_ids is None else "shared-books.zip"
         path, _ = QFileDialog.getSaveFileName(
             self, dialog_title, os.path.expanduser(f"~/{default_name}"),
             "ZIP archives (*.zip)",
         )
         if not path:
-            return
+            return False
+
+        # Copying potentially many/large PDFs into a zip can take a while --
+        # show real progress instead of leaving the window looking frozen.
+        total = len(manifest["books"])
+        progress = QProgressDialog("Preparing export...", "Cancel", 0, total, self)
+        progress.setWindowTitle(dialog_title)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)  # show immediately, even for quick exports
+        progress.setValue(0)
+        QApplication.processEvents()
+
+        def on_progress(index, total_count, filename):
+            if progress.wasCanceled():
+                raise _ExportCancelledError()
+            progress.setLabelText(f"Exporting {index} of {total_count}: {filename}")
+            progress.setValue(index)
+            QApplication.processEvents()
+
         try:
-            skipped = write_archive(path, manifest, filepaths)
+            skipped = write_archive(path, manifest, filepaths, progress_callback=on_progress)
+        except _ExportCancelledError:
+            progress.close()
+            try:
+                os.remove(path)  # don't leave a half-written archive behind
+            except OSError:
+                pass
+            return False
         except OSError as exc:
+            progress.close()
             QMessageBox.critical(self, "Export failed", f"Couldn't write the archive:\n{exc}")
-            return
+            return False
+        progress.close()
+
         n_books = len(manifest["books"]) - len(skipped)
         detail = "categories, bookmarks, and reading progress" if include_reading_state \
             else "categories and bookmarks"
@@ -904,6 +962,7 @@ class LibraryWindow(QMainWindow):
         if skipped:
             msg += f"\n\n{len(skipped)} book(s) were skipped because their file couldn't be found on disk."
         QMessageBox.information(self, "Export complete", msg)
+        return True
 
     def import_full_archive(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1060,8 +1119,14 @@ class LibraryWindow(QMainWindow):
         )
         status_menu = menu.addMenu(f"Mark {n} Selected as")
         self._populate_status_menu(status_menu, list(book_ids), clear_selection_after=True)
-        menu.addAction(f"Export {n} Selected...").triggered.connect(
-            lambda: self._export_selected_books(list(book_ids), clear_selection_after=True)
+        export_menu = menu.addMenu("Exports")
+        export_menu.addAction("Share Selected Books (PDFs + Categories + Bookmarks)...").triggered.connect(
+            lambda: self.export_selected_books_share(list(book_ids), clear_selection_after=True)
+        )
+        export_menu.addAction(
+            "Selected Books Export (PDFs + Categories + Bookmarks + Reading Data)..."
+        ).triggered.connect(
+            lambda: self.export_selected_books_archive(list(book_ids), clear_selection_after=True)
         )
         menu.addAction(f"Remove {n} Selected from Library").triggered.connect(
             lambda: self._bulk_remove_books(list(book_ids))
@@ -1939,6 +2004,12 @@ class LibraryWindow(QMainWindow):
     def toggle_select_mode(self, checked):
         self.select_mode_btn.setChecked(checked)
         self.select_mode = checked
+        if not checked:
+            # Turning Select off should also drop whatever was selected --
+            # otherwise it silently reappears (still selected) the next
+            # time Select is turned back on, which is confusing.
+            self._selected_book_ids.clear()
+            self._last_clicked_book_id = None
         self._update_selection_indicator()
         self.refresh_list()
 
