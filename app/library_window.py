@@ -1242,7 +1242,12 @@ class LibraryWindow(QMainWindow):
             )
             if folder:
                 self.db.set_setting("library_folder", os.path.abspath(folder))
-                self.refresh_library()
+                added = self.refresh_library()
+                if added:
+                    QMessageBox.information(
+                        self, "Library folder updated",
+                        f"Found and added {added} book(s) already in this folder.",
+                    )
         elif clear_btn is not None and clicked is clear_btn:
             self.db.set_setting("library_folder", "")
             self.refresh_library()
@@ -1359,14 +1364,44 @@ class LibraryWindow(QMainWindow):
     # ------------- Library sync (missing/renamed files) -------------
     def refresh_library(self, show_feedback=True):
         """Re-check the library against what's on disk -- run automatically
-        on startup, and on demand via the Refresh button or F5. Catches
-        files that were renamed or deleted outside the app, and refreshes
-        category counts and the book list to match."""
+        on startup, and on demand via the Refresh button or F5. Picks up any
+        PDFs sitting in the configured library folder that aren't tracked
+        yet, catches files that were renamed or deleted outside the app, and
+        refreshes category counts and the book list to match. Returns the
+        number of newly-discovered books added during this refresh."""
+        added = self._scan_library_folder()
         self._sync_missing_files()
         self.refresh_categories_sidebar()
         self.refresh_list()
         if show_feedback:
             self._flash_refresh_feedback()
+        return added
+
+    def _scan_library_folder(self):
+        """If a library folder is configured, pick up any PDFs sitting
+        inside it (directly, or in a subfolder) that the library isn't
+        already tracking -- e.g. files the user dropped in there outside
+        the app, or that were already present when the folder was first
+        set as the library folder. Already-tracked files are left alone
+        entirely (no move, no re-import) so this is a cheap no-op on a
+        folder where nothing's changed, since it runs on every refresh.
+        Files found in a subfolder get flattened to the top level, same as
+        "Add Folder" does. Returns the count of newly-added books."""
+        folder = self.db.get_setting("library_folder")
+        if not folder or not os.path.isdir(folder):
+            return 0
+        count = 0
+        for root, _, files in os.walk(folder):
+            for f in files:
+                if not f.lower().endswith(".pdf"):
+                    continue
+                path = os.path.join(root, f)
+                if self.db.get_book_by_path(os.path.abspath(path)) is not None:
+                    continue  # already tracked -- nothing to do
+                path = self._move_into_library_folder(path)
+                self._import_pdf(path)
+                count += 1
+        return count
 
     def _flash_refresh_feedback(self):
         """A simple, temporary visual cue on the Refresh button itself so a
@@ -1426,15 +1461,19 @@ class LibraryWindow(QMainWindow):
             "weren't found on disk at all \u2014 likely renamed or moved "
             "outside the app, or on a drive that isn't connected right now. "
             "Others still exist but sit outside your configured library "
-            "folder."
+            "folder.\n\nSelect any entries below and click \u201cClear "
+            "Selected\u201d to remove just those from your library."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
         list_widget = QListWidget()
+        list_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
         for book in books:
             tag = "missing" if book["id"] in self._truly_missing_book_ids else "outside library folder"
-            list_widget.addItem(QListWidgetItem(f"{book['title']} \u2014 [{tag}] {book['filepath']}"))
+            item = QListWidgetItem(f"{book['title']} \u2014 [{tag}] {book['filepath']}")
+            item.setData(Qt.UserRole, book["id"])
+            list_widget.addItem(item)
         layout.addWidget(list_widget)
 
         btn_row = QHBoxLayout()
@@ -1442,6 +1481,11 @@ class LibraryWindow(QMainWindow):
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dialog.close)
         btn_row.addWidget(close_btn)
+
+        clear_btn = QPushButton("Clear Selected")
+        clear_btn.setToolTip("Remove just the selected book(s) from your library")
+        clear_btn.clicked.connect(lambda: self._clear_selected_missing_books(dialog, list_widget))
+        btn_row.addWidget(clear_btn)
 
         relocatable_ids = [b["id"] for b in books if b["id"] in self._relocatable_book_ids]
         if relocatable_ids:
@@ -1451,12 +1495,38 @@ class LibraryWindow(QMainWindow):
 
         missing_ids = [b["id"] for b in books if b["id"] in self._truly_missing_book_ids]
         if missing_ids:
-            remove_btn = QPushButton(f"Remove {len(missing_ids)} Missing From Library")
+            remove_btn = QPushButton(f"Remove All {len(missing_ids)} Missing")
             remove_btn.clicked.connect(lambda: self._remove_missing_books(dialog, missing_ids))
             btn_row.addWidget(remove_btn)
 
         layout.addLayout(btn_row)
         dialog.exec()
+
+    def _clear_selected_missing_books(self, dialog, list_widget):
+        selected_items = list_widget.selectedItems()
+        if not selected_items:
+            QMessageBox.information(
+                self, "Nothing selected", "Select one or more books in the list first."
+            )
+            return
+        book_ids = [item.data(Qt.UserRole) for item in selected_items]
+
+        reply = QMessageBox.question(
+            self,
+            "Clear selected books",
+            f"Remove {len(book_ids)} selected book(s) from your library? "
+            f"This only removes their library entries (bookmarks, categories, "
+            f"metadata) \u2014 if a file still exists on disk it's left alone, "
+            f"just no longer tracked here.",
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        for book_id in book_ids:
+            self.db.remove_book(book_id)
+            delete_thumbnail(book_id)
+        dialog.close()
+        self.refresh_library(show_feedback=False)
 
     def _move_missing_books(self, dialog, book_ids):
         moved = 0
@@ -1473,7 +1543,6 @@ class LibraryWindow(QMainWindow):
         QMessageBox.information(
             self, "Move complete", f"Moved {moved} book(s) into your library folder."
         )
-
 
     def _remove_missing_books(self, dialog, book_ids):
         reply = QMessageBox.question(
