@@ -16,8 +16,20 @@ MANIFEST_NAME = "manifest.json"
 BOOKS_DIR = "books"
 
 
-def build_manifest(db, book_ids=None):
-    """Returns (manifest_dict, {filename: source_filepath})."""
+def build_manifest(db, book_ids=None, include_reading_state=True):
+    """Returns (manifest_dict, {filename: source_filepath}).
+
+    include_reading_state controls whether each book's personal reading
+    data -- status, favorite flag, and last-read page -- is included.
+    That data makes sense for a backup of your own library (restoring it
+    to yourself elsewhere should put you back where you left off), but
+    imposing it on someone you're sharing books with doesn't: they'd end
+    up with books mysteriously pre-marked "Finished" or already favorited,
+    or resuming mid-book at a page they never reached. Pass False for a
+    share-oriented export -- the importing side already treats a missing
+    status/is_favorite/last_page as "leave it alone", so simply omitting
+    them here is enough; no changes needed on the import path.
+    """
     if book_ids is None:
         book_ids = [b["id"] for b in db.get_books()]
 
@@ -31,16 +43,18 @@ def build_manifest(db, book_ids=None):
         filename = os.path.basename(book["filepath"])
         cats = db.get_categories_for_book(book_id)
         bookmarks = db.get_bookmarks(book_id)
-        books_out[filename] = {
+        entry = {
             "categories": [c["name"] for c in cats],
             "bookmarks": [
                 {"page_number": bm["page_number"], "label": bm["label"] or ""} for bm in bookmarks
             ],
-            "status": book["status"] or "unread",
-            "is_favorite": bool(book["is_favorite"]),
             "annotation": book["annotation"] or "",
-            "last_page": book["last_page"] or 0,
         }
+        if include_reading_state:
+            entry["status"] = book["status"] or "unread"
+            entry["is_favorite"] = bool(book["is_favorite"])
+            entry["last_page"] = book["last_page"] or 0
+        books_out[filename] = entry
         for c in cats:
             categories_seen[c["name"]] = bool(c["is_favorite"])
         filepaths[filename] = book["filepath"]

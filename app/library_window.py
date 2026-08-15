@@ -207,6 +207,9 @@ class LibraryWindow(QMainWindow):
         export_menu.addAction("Selected Books (PDFs + Categories + Bookmarks)...").triggered.connect(
             self.export_selected_books_archive
         )
+        export_menu.addAction(
+            "Share Selected Books (PDFs + Categories + Bookmarks, no reading data)..."
+        ).triggered.connect(self.export_selected_books_share)
         export_menu.addAction("Categories Only...").triggered.connect(self.export_library)
         export_menu.addAction("Bookmarks Only...").triggered.connect(self.export_bookmarks_only)
         export_button = QToolButton()
@@ -840,10 +843,13 @@ class LibraryWindow(QMainWindow):
 
     def export_selected_books_archive(self):
         """Export just the currently selected books -- PDFs plus their
-        categories, bookmarks, and reading progress -- the natural way to
-        share a specific book or handful of books with someone else. A
-        categories/bookmarks-only export would be useless to them, since
-        they don't have those books yet."""
+        categories, bookmarks, and your own reading progress (status,
+        favorite, last page read). Best for backing up a subset of your
+        library or moving it to another machine of your own, since that
+        reading state is exactly what you'd want restored. For sending
+        books to someone else, use "Share Selected Books" instead --
+        imposing your reading progress and favorites on their copy would
+        just be confusing for them."""
         if not self._selected_book_ids:
             QMessageBox.information(
                 self, "No books selected",
@@ -853,8 +859,27 @@ class LibraryWindow(QMainWindow):
             return
         self._run_full_archive_export(list(self._selected_book_ids), "Export Selected Books")
 
-    def _run_full_archive_export(self, book_ids, dialog_title):
-        manifest, filepaths = build_archive_manifest(self.db, book_ids)
+    def export_selected_books_share(self):
+        """Same as export_selected_books_archive, but for handing books to
+        someone else: PDFs, categories, and bookmarks travel over, but not
+        your own status/favorite/last-page -- so their copy starts clean
+        instead of showing up mysteriously pre-favorited or already marked
+        Finished."""
+        if not self._selected_book_ids:
+            QMessageBox.information(
+                self, "No books selected",
+                "Turn on Select, then click (or Ctrl+click/Shift+click for "
+                "several) the books you want to share first.",
+            )
+            return
+        self._run_full_archive_export(
+            list(self._selected_book_ids), "Share Selected Books", include_reading_state=False
+        )
+
+    def _run_full_archive_export(self, book_ids, dialog_title, include_reading_state=True):
+        manifest, filepaths = build_archive_manifest(
+            self.db, book_ids, include_reading_state=include_reading_state
+        )
         if not manifest["books"]:
             QMessageBox.information(
                 self, "Nothing to export", "There's nothing to export.",
@@ -873,7 +898,9 @@ class LibraryWindow(QMainWindow):
             QMessageBox.critical(self, "Export failed", f"Couldn't write the archive:\n{exc}")
             return
         n_books = len(manifest["books"]) - len(skipped)
-        msg = f"Exported {n_books} book(s) (with categories, bookmarks, and reading progress) to:\n{path}"
+        detail = "categories, bookmarks, and reading progress" if include_reading_state \
+            else "categories and bookmarks"
+        msg = f"Exported {n_books} book(s) (with {detail}) to:\n{path}"
         if skipped:
             msg += f"\n\n{len(skipped)} book(s) were skipped because their file couldn't be found on disk."
         QMessageBox.information(self, "Export complete", msg)
