@@ -60,6 +60,7 @@ def build_manifest(db, book_ids=None, include_reading_state=True):
         filepaths[filename] = book["filepath"]
 
     manifest = {
+        "kind": "full_archive",
         "format_version": FORMAT_VERSION,
         "exported_at": datetime.now().isoformat(),
         "books": books_out,

@@ -1,7 +1,9 @@
 """Main library window: browse, search, sort, filter, favorite, categorize,
 and open PDF books."""
+import json
 import os
 import shutil
+import zipfile
 from collections import OrderedDict
 
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
@@ -236,16 +238,14 @@ class LibraryWindow(QMainWindow):
         )
         toolbar.addWidget(export_button)
 
-        import_menu = QMenu(self)
-        import_menu.addAction("Full Archive...").triggered.connect(self.import_full_archive)
-        import_menu.addAction("Categories Only...").triggered.connect(self.import_library)
-        import_menu.addAction("Bookmarks Only...").triggered.connect(self.import_bookmarks_only)
-        import_button = QToolButton()
-        import_button.setText("Import...")
-        import_button.setPopupMode(QToolButton.InstantPopup)
-        import_button.setMenu(import_menu)
-        import_button.setToolTip("Restore a previously exported archive, categories, or bookmarks file")
-        toolbar.addWidget(import_button)
+        import_action = QAction("Import...", self)
+        import_action.setToolTip(
+            "Restore a previously exported file -- Full Archive (.zip), or a "
+            "Categories or Bookmarks export (.json). The right kind of "
+            "import is detected automatically from the file you pick."
+        )
+        import_action.triggered.connect(self.import_file)
+        toolbar.addAction(import_action)
 
         toolbar.addSeparator()
 
@@ -779,12 +779,7 @@ class LibraryWindow(QMainWindow):
         )
         return True
 
-    def import_library(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Categories", os.path.expanduser("~"), "JSON files (*.json)"
-        )
-        if not path:
-            return
+    def _import_categories_file(self, path):
         try:
             data = read_export_file(path)
         except (OSError, ValueError) as exc:
@@ -826,12 +821,7 @@ class LibraryWindow(QMainWindow):
             f"Exported bookmarks for {n_books} book{'s' if n_books != 1 else ''} to:\n{path}",
         )
 
-    def import_bookmarks_only(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Bookmarks", os.path.expanduser("~"), "JSON files (*.json)"
-        )
-        if not path:
-            return
+    def _import_bookmarks_file(self, path):
         try:
             data = read_bookmark_export_file(path)
         except (OSError, ValueError) as exc:
@@ -964,13 +954,66 @@ class LibraryWindow(QMainWindow):
         QMessageBox.information(self, "Export complete", msg)
         return True
 
-    def import_full_archive(self):
+    def import_file(self):
+        """Universal import: pick one file, and the right kind of import
+        (Full Archive, Categories, or Bookmarks) is detected automatically
+        from its content, instead of needing to pick the right menu item
+        first."""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import Full Archive", os.path.expanduser("~"), "ZIP archives (*.zip)"
+            self, "Import",
+            os.path.expanduser("~"),
+            "Supported files (*.zip *.json);;ZIP archives (*.zip);;"
+            "JSON files (*.json);;All files (*)",
         )
         if not path:
             return
 
+        kind = self._detect_import_kind(path)
+        if kind == "full_archive":
+            self._import_full_archive_file(path)
+        elif kind == "categories":
+            self._import_categories_file(path)
+        elif kind == "bookmarks":
+            self._import_bookmarks_file(path)
+        else:
+            QMessageBox.critical(
+                self, "Import failed",
+                "That doesn't look like a file this app can import \u2014 "
+                "expected a Full Archive (.zip), or a Categories or "
+                "Bookmarks export (.json).",
+            )
+
+    @staticmethod
+    def _detect_import_kind(path):
+        """Returns 'full_archive', 'categories', 'bookmarks', or None if the
+        file doesn't look like any export this app produces."""
+        if zipfile.is_zipfile(path):
+            return "full_archive"
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError, UnicodeDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+
+        kind = data.get("kind")
+        if kind in ("categories", "bookmarks"):
+            return kind
+
+        # No "kind" marker -- this predates that field, so fall back to
+        # structural detection: the categories format has a top-level
+        # "categories" key, while the bookmarks format's "books" entries
+        # are each a plain list of bookmarks rather than a dict.
+        if "categories" in data:
+            return "categories"
+        books = data.get("books")
+        if isinstance(books, dict) and books and all(isinstance(v, list) for v in books.values()):
+            return "bookmarks"
+        return None
+
+    def _import_full_archive_file(self, path):
         library_folder = self.db.get_setting("library_folder")
         if library_folder and os.path.isdir(library_folder):
             # A library folder is configured -- use it automatically instead

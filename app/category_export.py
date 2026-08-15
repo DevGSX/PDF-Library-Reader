@@ -38,6 +38,7 @@ def build_export_data(db, book_ids=None):
             categories_seen[c["name"]] = bool(c["is_favorite"])
 
     return {
+        "kind": "categories",
         "format_version": FORMAT_VERSION,
         "exported_at": datetime.now().isoformat(),
         "books": books_out,

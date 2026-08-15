@@ -29,6 +29,7 @@ def build_export_data(db, book_ids=None):
         ]
 
     return {
+        "kind": "bookmarks",
         "format_version": FORMAT_VERSION,
         "exported_at": datetime.now().isoformat(),
         "books": books_out,
