@@ -884,11 +884,18 @@ class LibraryWindow(QMainWindow):
         )
         if not path:
             return
-        destination = QFileDialog.getExistingDirectory(
-            self, "Choose a folder to save any new books into", os.path.expanduser("~"),
-        )
-        if not destination:
-            return
+
+        library_folder = self.db.get_setting("library_folder")
+        if library_folder and os.path.isdir(library_folder):
+            # A library folder is configured -- use it automatically instead
+            # of asking each time, same as Add Book(s)/Add Folder already do.
+            destination = library_folder
+        else:
+            destination = QFileDialog.getExistingDirectory(
+                self, "Choose a folder to save any new books into", os.path.expanduser("~"),
+            )
+            if not destination:
+                return
         try:
             summary = apply_full_archive(self.db, path, destination)
         except (OSError, KeyError, ValueError) as exc:
@@ -1461,8 +1468,9 @@ class LibraryWindow(QMainWindow):
             "weren't found on disk at all \u2014 likely renamed or moved "
             "outside the app, or on a drive that isn't connected right now. "
             "Others still exist but sit outside your configured library "
-            "folder.\n\nSelect any entries below and click \u201cClear "
-            "Selected\u201d to remove just those from your library."
+            "folder.\n\nSelect entries below and click \u201cClear "
+            "Selected\u201d to remove just those, or \u201cClear All\u201d for "
+            "everything in this list."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -1482,10 +1490,18 @@ class LibraryWindow(QMainWindow):
         close_btn.clicked.connect(dialog.close)
         btn_row.addWidget(close_btn)
 
-        clear_btn = QPushButton("Clear Selected")
-        clear_btn.setToolTip("Remove just the selected book(s) from your library")
-        clear_btn.clicked.connect(lambda: self._clear_selected_missing_books(dialog, list_widget))
-        btn_row.addWidget(clear_btn)
+        clear_selected_btn = QPushButton("Clear Selected")
+        clear_selected_btn.setToolTip("Remove just the selected book(s) from your library")
+        clear_selected_btn.clicked.connect(
+            lambda: self._clear_selected_missing_books(dialog, list_widget)
+        )
+        btn_row.addWidget(clear_selected_btn)
+
+        all_ids = [b["id"] for b in books]
+        clear_all_btn = QPushButton(f"Clear All {len(all_ids)}")
+        clear_all_btn.setToolTip("Remove every book in this list from your library")
+        clear_all_btn.clicked.connect(lambda: self._clear_all_missing_books(dialog, all_ids))
+        btn_row.addWidget(clear_all_btn)
 
         relocatable_ids = [b["id"] for b in books if b["id"] in self._relocatable_book_ids]
         if relocatable_ids:
@@ -1510,15 +1526,34 @@ class LibraryWindow(QMainWindow):
             )
             return
         book_ids = [item.data(Qt.UserRole) for item in selected_items]
-
-        reply = QMessageBox.question(
-            self,
-            "Clear selected books",
-            f"Remove {len(book_ids)} selected book(s) from your library? "
-            f"This only removes their library entries (bookmarks, categories, "
-            f"metadata) \u2014 if a file still exists on disk it's left alone, "
-            f"just no longer tracked here.",
+        self._clear_missing_books(
+            dialog, book_ids,
+            title="Clear selected books",
+            prompt=(
+                f"Remove {len(book_ids)} selected book(s) from your library? "
+                f"This only removes their library entries (bookmarks, categories, "
+                f"metadata) \u2014 if a file still exists on disk it's left alone, "
+                f"just no longer tracked here."
+            ),
         )
+
+    def _clear_all_missing_books(self, dialog, book_ids):
+        self._clear_missing_books(
+            dialog, book_ids,
+            title="Clear all books",
+            prompt=(
+                f"Remove all {len(book_ids)} book(s) in this list from your library "
+                f"\u2014 both missing ones and ones outside your library folder? "
+                f"This only removes their library entries (bookmarks, categories, "
+                f"metadata) \u2014 any files that still exist on disk are left "
+                f"alone, just no longer tracked here."
+            ),
+        )
+
+    def _clear_missing_books(self, dialog, book_ids, title, prompt):
+        if not book_ids:
+            return
+        reply = QMessageBox.question(self, title, prompt)
         if reply != QMessageBox.Yes:
             return
 
