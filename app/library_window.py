@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from .add_to_category_dialog import AddToCategoryDialog
 from .badges import decorate_thumbnail
-from .book_details_dialog import BookDetailsDialog
+from .book_details_dialog import STATUS_OPTIONS, BookDetailsDialog
 from .bookmark_export import apply_import_data as apply_bookmark_import
 from .bookmark_export import build_export_data as build_bookmark_export
 from .bookmark_export import read_export_file as read_bookmark_export_file
@@ -67,6 +67,7 @@ SORT_OPTIONS = {
 # index in the status filter combo -> status value passed to the database
 STATUS_FILTER_OPTIONS = [
     ("None", None),
+    ("To Read", "to_read"),
     ("Currently Reading", "reading"),
     ("Finished", "finished"),
     ("Unread", "unread"),
@@ -989,6 +990,8 @@ class LibraryWindow(QMainWindow):
         add_menu = menu.addMenu("Add to Category")
         # Single-book action: don't touch any unrelated active multi-selection.
         self._populate_category_menu(add_menu, [book_id], clear_selection_after=False)
+        status_menu = menu.addMenu("Mark as")
+        self._populate_status_menu(status_menu, [book_id], clear_selection_after=False)
         menu.addAction("Set Series...").triggered.connect(lambda: self._set_series_for_books([book_id]))
         menu.addAction("Set Genre...").triggered.connect(lambda: self._set_genre_for_books([book_id]))
         menu.addAction("Set Language...").triggered.connect(lambda: self._set_language_for_books([book_id]))
@@ -1010,6 +1013,8 @@ class LibraryWindow(QMainWindow):
         menu.addAction(f"Set Language for {n} Selected...").triggered.connect(
             lambda: self._set_language_for_books(list(book_ids), clear_selection_after=True)
         )
+        status_menu = menu.addMenu(f"Mark {n} Selected as")
+        self._populate_status_menu(status_menu, list(book_ids), clear_selection_after=True)
         menu.addAction(f"Export {n} Selected...").triggered.connect(
             lambda: self._export_selected_books(list(book_ids), clear_selection_after=True)
         )
@@ -1035,6 +1040,20 @@ class LibraryWindow(QMainWindow):
         menu.addAction("New Category...").triggered.connect(
             lambda: self._create_category_and_add(book_ids, clear_selection_after)
         )
+
+    def _populate_status_menu(self, menu, book_ids, clear_selection_after=False):
+        for value, label in STATUS_OPTIONS:
+            menu.addAction(label).triggered.connect(
+                lambda checked=False, s=value: self._set_status_for_books(
+                    book_ids, s, clear_selection_after
+                )
+            )
+
+    def _set_status_for_books(self, book_ids, status, clear_selection_after=False):
+        self.db.bulk_set_status(book_ids, status)
+        if clear_selection_after:
+            self.clear_selection()
+        self.refresh_list()
 
     def _add_books_to_category(self, category_id, book_ids, clear_selection_after=False):
         self.db.add_books_to_category(category_id, book_ids)

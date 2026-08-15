@@ -30,7 +30,12 @@ from .presets import GENRE_PRESETS, LANGUAGE_PRESETS
 from .thumbnails import ensure_thumbnail
 from .widgets import human_size
 
-STATUS_OPTIONS = [("unread", "Unread"), ("reading", "Reading"), ("finished", "Finished")]
+STATUS_OPTIONS = [
+    ("unread", "Unread"),
+    ("to_read", "To Read"),
+    ("reading", "Reading"),
+    ("finished", "Finished"),
+]
 
 
 class BookDetailsDialog(QDialog):

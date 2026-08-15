@@ -10,10 +10,12 @@ from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap, QPolygon
 BANNER_COLORS = {
     "finished": QColor(34, 139, 60, 235),   # green
     "reading": QColor(33, 115, 235, 235),   # blue
+    "to_read": QColor(124, 58, 237, 235),   # purple
 }
 BANNER_TEXT = {
     "finished": "FINISHED",
     "reading": "READING",
+    "to_read": "TO READ",
 }
 FAVORITE_COLOR = QColor(255, 179, 0, 240)  # gold/amber
 CORRUPTED_COLOR = QColor(220, 38, 38, 245)  # red

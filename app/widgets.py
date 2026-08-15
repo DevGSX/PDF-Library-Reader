@@ -66,6 +66,10 @@ class BookCard(QWidget):
             chip = QLabel("\U0001F4D6 Reading")
             chip.setStyleSheet(f"background-color: #2173eb; {STATUS_CHIP_STYLE}")
             title_row.addWidget(chip)
+        elif status == "to_read":
+            chip = QLabel("\U0001F516 To Read")
+            chip.setStyleSheet(f"background-color: #7c3aed; {STATUS_CHIP_STYLE}")
+            title_row.addWidget(chip)
         title_row.addStretch()
         text_layout.addLayout(title_row)
 
@@ -187,6 +191,8 @@ class CoverCell(QWidget):
             tooltip_bits.append("\u2713 Finished")
         elif status == "reading":
             tooltip_bits.append("Currently reading")
+        elif status == "to_read":
+            tooltip_bits.append("\U0001F516 To Read")
         tooltip_bits.append(
             "Click to select \u00b7 double-click to open \u00b7 right-click for more"
             if select_mode else

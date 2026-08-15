@@ -80,7 +80,7 @@ class Database:
             "annotation": "TEXT DEFAULT ''",
             "language": "TEXT DEFAULT ''",
             "genre": "TEXT DEFAULT ''",
-            "status": "TEXT DEFAULT 'unread'",  # 'unread' | 'reading' | 'finished'
+            "status": "TEXT DEFAULT 'unread'",  # 'unread' | 'to_read' | 'reading' | 'finished'
         }
         for col, decl in new_columns.items():
             if col not in existing_cols:
@@ -119,7 +119,7 @@ class Database:
     def get_books(self, favorites_only=False, search=None, sort_by="title", descending=False,
                   status=None, category_id=None, genres=None, languages=None):
         """Return library entries as plain dicts, each carrying a live file_size.
-        `status`, if given, restricts to one of 'unread' | 'reading' | 'finished'.
+        `status`, if given, restricts to one of 'unread' | 'to_read' | 'reading' | 'finished'.
         `category_id`, if given, restricts to books belonging to that category.
         `genres`, if given, restricts to books whose (possibly multi-value,
         "Science Fiction_Fantasy"-style) genre field CONTAINS any of the
@@ -265,6 +265,15 @@ class Database:
         )
         self.conn.commit()
 
+    def bulk_set_status(self, book_ids, status):
+        book_ids = list(book_ids)
+        if not book_ids or status not in ("unread", "to_read", "reading", "finished"):
+            return
+        self.conn.executemany(
+            "UPDATE books SET status = ? WHERE id = ?", [(status, bid) for bid in book_ids]
+        )
+        self.conn.commit()
+
     def search_suggestions(self, query, limit=5):
         """Categorized quick-search results for the live preview dropdown:
         matching titles, plus distinct matching authors/series/genres/languages
@@ -317,16 +326,17 @@ class Database:
         return {"titles": titles, "authors": authors, "series": series, "genres": genres, "languages": languages}
 
     def set_status(self, book_id, status):
-        if status not in ("unread", "reading", "finished"):
+        if status not in ("unread", "to_read", "reading", "finished"):
             return
         self.conn.execute("UPDATE books SET status = ? WHERE id = ?", (status, book_id))
         self.conn.commit()
 
     def mark_as_reading_if_new(self, book_id):
-        """Called when a book is opened: promote it from 'unread' to 'reading'.
-        Never downgrades an already-'reading' or 'finished' book."""
+        """Called when a book is opened: promote it to 'reading' from either
+        'unread' or 'to_read'. Never downgrades an already-'reading' or
+        'finished' book."""
         book = self.get_book(book_id)
-        if book and (book["status"] or "unread") == "unread":
+        if book and (book["status"] or "unread") in ("unread", "to_read"):
             self.set_status(book_id, "reading")
 
     # ---------------- Categories ----------------
