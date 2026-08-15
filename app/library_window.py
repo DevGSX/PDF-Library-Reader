@@ -1418,12 +1418,22 @@ class LibraryWindow(QMainWindow):
 
     def _sync_missing_files(self):
         """A book is flagged -- hidden from the main list, surfaced via the
-        missing-files indicator -- if its file is outright gone, OR (when a
-        library folder is configured) if it still exists but sits somewhere
-        other than that folder. The two cases get different resolutions
-        (move vs. remove), so they're tracked separately even though both
-        feed into the same _missing_book_ids the rest of the UI checks."""
+        missing-files indicator -- if its file is outright gone, OR if it
+        still exists but doesn't belong to the currently configured library
+        folder. That "doesn't belong" check only applies once the library
+        folder feature has actually been engaged with -- either a real
+        folder is set (flag anything outside it), or it was explicitly
+        cleared via Library Folder > Clear (flag everything, the same way
+        switching to a different folder would flag whatever isn't in it).
+        A library folder that's simply never been touched at all flags
+        nothing, so the feature has zero effect until someone opts in.
+        get_setting returns None only in that last, untouched case -- once
+        Clear has been used it returns "" instead, which is what tells the
+        two apart. The two flagged cases get different resolutions (move
+        vs. remove), so they're tracked separately even though both feed
+        into the same _missing_book_ids the rest of the UI checks."""
         library_folder = self.db.get_setting("library_folder")
+        feature_engaged = library_folder is not None
         abs_library_folder = (
             os.path.abspath(library_folder)
             if library_folder and os.path.isdir(library_folder) else None
@@ -1435,7 +1445,7 @@ class LibraryWindow(QMainWindow):
             filepath = book["filepath"]
             if not os.path.exists(filepath):
                 gone.add(book["id"])
-            elif abs_library_folder and os.path.dirname(os.path.abspath(filepath)) != abs_library_folder:
+            elif feature_engaged and os.path.dirname(os.path.abspath(filepath)) != abs_library_folder:
                 outside_folder.add(book["id"])
 
         self._truly_missing_book_ids = gone
@@ -1504,7 +1514,12 @@ class LibraryWindow(QMainWindow):
         btn_row.addWidget(clear_all_btn)
 
         relocatable_ids = [b["id"] for b in books if b["id"] in self._relocatable_book_ids]
-        if relocatable_ids:
+        library_folder = self.db.get_setting("library_folder")
+        if relocatable_ids and library_folder and os.path.isdir(library_folder):
+            # Only offer this when there's an actual folder to move into --
+            # after Library Folder > Clear, every book counts as
+            # "relocatable" (nothing to compare it to), but there's nowhere
+            # to move it, so the button would just silently do nothing.
             move_btn = QPushButton(f"Move {len(relocatable_ids)} Into Library Folder")
             move_btn.clicked.connect(lambda: self._move_missing_books(dialog, relocatable_ids))
             btn_row.addWidget(move_btn)

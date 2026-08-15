@@ -19,17 +19,46 @@ and a distraction-free "simple text" reading mode.
   Re-scanning a folder you've already added never overwrites metadata you
   edited by hand.
 - **Refresh (F5)** — click **Refresh** in the toolbar, or just press **F5**,
-  to re-check the library against what's actually on disk. The button
-  briefly shows "✓ Refreshed" so you know your click (or F5) actually did
-  something, even if nothing changed. This also runs automatically every
-  time you start the app. Any book whose file was renamed or deleted
-  outside the app (so its recorded path no longer exists) is hidden from
-  the normal view — with a small warning like "⚠ 1 book missing... — click
-  for details" appearing so you know something's off — while its library
-  entry (bookmarks, categories, notes) is kept in case the file turns up
-  again later, e.g. on a drive that wasn't connected. Clicking that warning
-  opens a list of exactly which books are missing and where their file used
-  to be, with the option to permanently remove any that are gone for good.
+  to re-check the library against what's actually on disk (this also runs
+  automatically every time you start the app, and right after you change
+  your Library Folder setting — see below). The button briefly shows
+  "✓ Refreshed" so you know your click (or F5) actually did something, even
+  if nothing changed.
+
+  A book is hidden from the normal view — and counted in a small warning
+  like "⚠ 2 books need attention... — click for details" — if either:
+  - its file was renamed or deleted outside the app (so its recorded path
+    no longer exists), or
+  - a Library Folder is configured and the book's file exists but isn't
+    inside it, which also covers every book at once right after you clear
+    the Library Folder setting, since none of them belong to "no folder"
+    either.
+
+  Its library entry (bookmarks, categories, notes) is always kept in case
+  the file turns up again later, e.g. on a drive that wasn't connected.
+  Clicking the warning opens a list of exactly which books need attention
+  and why, where you can select any entries and **Clear Selected**, or use
+  **Clear All** for the whole list at once, to remove just their library
+  entries (never an actual file that still exists); **Move N Into Library
+  Folder** relocates the ones that are just in the wrong place (shown only
+  when a folder is actually configured); **Remove All N Missing** clears
+  out the ones that are genuinely gone for good.
+- **Library Folder** — click **Library Folder...** in the toolbar to see
+  whether one's set, **Change...** to pick a folder for your whole library
+  to live in, or **Clear** to go back to books staying wherever you
+  originally added them from. Once a folder is set:
+  - **Add Book(s)** and **Add Folder** move newly added PDFs into it (flat
+    — no subfolders kept) instead of leaving them wherever you picked them
+    from; a name collision gets a "(1)", "(2)"... suffix rather than
+    overwriting anything.
+  - Every refresh also scans the folder itself for PDFs the library doesn't
+    know about yet — including ones sitting in a subfolder, which get
+    flattened up to the top level — so anything you drop in there yourself
+    from outside the app shows up automatically on the next refresh (or
+    immediately, right after you point the folder at one that already has
+    books in it).
+  - Importing a **Full Archive** extracts straight into it too, skipping
+    the "choose a folder" prompt.
 - **Two library views** — **Simple Text**, the detailed list (title, size,
   page count, last read), and **Image Preview**, a grid of page-1 thumbnails
   like a bookshelf. Thumbnails are generated once and cached to disk, so
@@ -69,17 +98,21 @@ and a distraction-free "simple text" reading mode.
   Authors). Click any suggestion to jump straight to all matching books.
 - **Hover highlight** — hovering a book (its row in Simple Text view, or its
   cover in Image Preview) shows a light blue tint and outline around it.
-- **Favorites get a corner star** — a gold star badge appears in the
-  bottom-right corner of a favorited book's cover in Image Preview, so
-  favorites are visible at a glance without opening anything.
-- **Reading status** — opening a book automatically marks it "Reading"; mark
-  it "Finished" from the reader toolbar or the details panel. Both statuses
-  render the same way: a colored banner across the top of the cover in Image
-  Preview (blue "READING" / green "FINISHED"), and a matching chip next to
-  the title in Simple Text view.
+- **Favorites get a corner star** — a gold star badge appears on a
+  favorited book's cover in Image Preview, so favorites are visible at a
+  glance without opening anything.
+- **Reading status** — four statuses: Unread, To Read, Reading, and
+  Finished. Set any of them from a book's right-click **Mark as** submenu
+  (also available for a bulk selection via **Select** mode), or from the
+  details panel. Opening a book automatically promotes it to "Reading" from
+  either Unread or To Read; mark it "Finished" from the reader toolbar or
+  the details panel. In Image Preview each status shows as a small colored
+  icon badge in the corner of the cover — a purple bookmark ribbon for To
+  Read, a blue play triangle for Reading, a green checkmark for Finished —
+  and a matching chip next to the title in Simple Text view.
 - **Status filter** — a "Status" dropdown next to the filter box narrows the
-  library to None (no filter), Currently Reading, Finished, or Unread —
-  combinable with Favorites and the title filter.
+  library to None (no filter), To Read, Currently Reading, Finished, or
+  Unread — combinable with Favorites and the title filter.
 - **Alphabetical grouping with a jump-to-letter bar** — in Image Preview,
   sorting by Title (A-Z or Z-A) groups covers under letter headers (A, B,
   C... with "#" for titles starting with a number or symbol), with a
@@ -292,7 +325,7 @@ to open the panel. From there you can:
 - Pick one or more **Languages** the same way (check as many as apply —
   shows e.g. "English, Bulgarian" when closed), plus check **Custom** to
   add one more language that isn't in the list
-- Set its **Status** directly (Unread / Reading / Finished)
+- Set its **Status** directly (Unread / To Read / Reading / Finished)
 - Toggle **Favorite**
 - Jump straight into **Open Book**
 
