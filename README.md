@@ -271,7 +271,8 @@ and a distraction-free "simple text" reading mode.
   since that view's plain text can already be selected and copied directly.
 - **Highlights** — right-click a selection (or use the "Save Highlight"
   button in the selection popup) to pick a color and a style — a solid
-  highlighter-style **fill**, an **underline**, or a **strikethrough**, the
+  highlighter-style **fill**, an **underline**, a **strikethrough**, or
+  fill combined with either accent line, the
   same distinct annotation tools a real PDF editor offers — and keep it
   permanently on the page. The "Highlight Color" toolbar button sets the
   default color used for both the live selection and new highlights, so

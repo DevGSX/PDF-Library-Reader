@@ -270,7 +270,14 @@ class TextSelectionOverlay(QWidget):
 
     @staticmethod
     def _paint_highlight(painter, rects, color, style):
-        if style == "underline":
+        if style in ("fill", "fill_underline", "fill_strikethrough"):
+            fill_color = QColor(color)
+            fill_color.setAlpha(110)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(fill_color)
+            for r in rects:
+                painter.drawRect(r)
+        if style in ("underline", "fill_underline"):
             pen_color = QColor(color)
             pen_color.setAlpha(220)
             painter.setPen(QPen(pen_color, 2))
@@ -278,7 +285,7 @@ class TextSelectionOverlay(QWidget):
             for r in rects:
                 y = r.bottom() - 1
                 painter.drawLine(r.left(), y, r.right(), y)
-        elif style == "strikethrough":
+        if style in ("strikethrough", "fill_strikethrough"):
             pen_color = QColor(color)
             pen_color.setAlpha(220)
             painter.setPen(QPen(pen_color, 2))
@@ -286,13 +293,6 @@ class TextSelectionOverlay(QWidget):
             for r in rects:
                 y = r.top() + r.height() / 2
                 painter.drawLine(r.left(), y, r.right(), y)
-        else:  # "fill" -- a translucent highlighter-marker block
-            fill_color = QColor(color)
-            fill_color.setAlpha(110)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(fill_color)
-            for r in rects:
-                painter.drawRect(r)
 
 
 class SelectionPopup(QWidget):
@@ -363,7 +363,13 @@ class HighlightDialog(QDialog):
     actually highlighted, read-only, so it's easy to tell highlights
     apart without having to jump to the page."""
 
-    STYLES = [("fill", "Highlight (fill)"), ("underline", "Underline"), ("strikethrough", "Strikethrough")]
+    STYLES = [
+        ("fill", "Highlight (fill)"),
+        ("underline", "Underline"),
+        ("strikethrough", "Strikethrough"),
+        ("fill_underline", "Highlight + Underline"),
+        ("fill_strikethrough", "Highlight + Strikethrough"),
+    ]
 
     def __init__(self, title, initial_name, initial_color, initial_style="fill", text_preview=None, parent=None):
         super().__init__(parent)

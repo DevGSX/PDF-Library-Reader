@@ -115,18 +115,13 @@ def _reorder_for_columns(chars):
     if not chars:
         return chars
 
-    lines = _group_into_lines(chars)  # (y0, y1, start, end)
+    lines = _group_into_lines(chars)  # (y0, y1, x0, x1, start, end)
     if len(lines) < 4:
         return chars
 
     info = []  # (y0, start, end, x0, x1, original_block_no)
-    for (y0, _y1, s, e) in lines:
-        info.append((
-            y0, s, e,
-            min(chars[i][X0] for i in range(s, e + 1)),
-            max(chars[i][X1] for i in range(s, e + 1)),
-            chars[s][BLOCK],
-        ))
+    for (y0, _y1, x0, x1, s, e) in lines:
+        info.append((y0, s, e, x0, x1, chars[s][BLOCK]))
 
     page_x0 = min(li[3] for li in info)
     page_x1 = max(li[4] for li in info)
@@ -183,17 +178,20 @@ def char_index_at_point(chars, x, y):
     should snap to, for use as a selection endpoint. Returns None if
     `chars` is empty.
 
-    Snaps to the closest LINE by vertical distance (so clicking above the
-    first line or below the last still gives a sensible answer), then
-    within that line, to the character whose horizontal range contains
-    the point, or whichever character edge is closest if the point falls
-    in a gap or outside the line's own bounds.
+    Snaps to the closest LINE using the point's full 2D distance to each
+    line's bounding box -- not just vertical distance -- since a
+    two-column layout routinely has two lines (one per column) sitting at
+    nearly the same y; picking by y alone would frequently resolve a
+    click in one column to a line in the other. Then, within the chosen
+    line, snaps to the character whose horizontal range contains the
+    point, or whichever character edge is closest if the point falls in a
+    gap or outside the line's own bounds.
     """
     if not chars:
         return None
 
     lines = _group_into_lines(chars)
-    best_start, best_end = _closest_line(lines, y)
+    best_start, best_end = _closest_line(lines, x, y)
 
     for i in range(best_start, best_end + 1):
         c = chars[i]
@@ -211,38 +209,45 @@ def char_index_at_point(chars, x, y):
 
 
 def _group_into_lines(chars):
-    """Returns [(y0, y1, start_index, end_index), ...] -- the vertical
-    span and index range of each (block_no, line_no) run in `chars`.
-    Assumes `chars` is already sorted in reading order."""
+    """Returns [(y0, y1, x0, x1, start_index, end_index), ...] -- the
+    bounding box and index range of each (block_no, line_no) run in
+    `chars`. Assumes `chars` is already sorted in reading order."""
     lines = []
     start = 0
     for i in range(1, len(chars) + 1):
         if i == len(chars) or (chars[i][BLOCK], chars[i][LINE]) != (chars[start][BLOCK], chars[start][LINE]):
-            y0 = min(c[Y0] for c in chars[start:i])
-            y1 = max(c[Y1] for c in chars[start:i])
-            lines.append((y0, y1, start, i - 1))
+            chunk = chars[start:i]
+            y0 = min(c[Y0] for c in chunk)
+            y1 = max(c[Y1] for c in chunk)
+            x0 = min(c[X0] for c in chunk)
+            x1 = max(c[X1] for c in chunk)
+            lines.append((y0, y1, x0, x1, start, i - 1))
             start = i
     return lines
 
 
-def _closest_line(lines, y):
+def _closest_line(lines, x, y):
     """The (start_index, end_index) of whichever line in `lines` a given
-    y most plausibly belongs to. Containment (y within a line's own
-    [y0, y1]) always wins over proximity -- but critically, ALL lines are
-    checked rather than stopping at the first containing match, with ties
-    (including the not-uncommon case of two lines' boxes slightly
-    overlapping, e.g. under tight leading) broken by closeness to each
-    line's own vertical center. A y that lands in the sliver where two
-    lines' boxes overlap should resolve to whichever line it's visually
-    closer to the middle of, not just whichever line happens to be
-    checked first."""
+    point (x, y) most plausibly belongs to, using the point's actual 2D
+    distance to each line's bounding box (0 if the point falls inside it)
+    as the primary criterion -- not vertical distance alone. This is what
+    makes selecting within one column of a multi-column layout reliable:
+    two lines from different columns routinely sit at nearly the same y
+    (rows naturally line up across columns in a real 2-column document),
+    so a click squarely inside one column's line must not lose out to the
+    other column's same-row line just because their y-centers happen to
+    be marginally closer -- the horizontal distance has to count too.
+    Ties (both lines equally close in 2D, e.g. two vertically-overlapping
+    lines in the SAME column under tight leading) are broken by closeness
+    to each line's own vertical center, same as before."""
     best_key = None
     best_range = None
-    for (ly0, ly1, start, end) in lines:
-        contains = ly0 <= y <= ly1
-        dist = 0.0 if contains else min(abs(y - ly0), abs(y - ly1))
+    for (ly0, ly1, lx0, lx1, start, end) in lines:
+        dx = max(lx0 - x, 0.0, x - lx1)
+        dy = max(ly0 - y, 0.0, y - ly1)
+        dist_sq = dx * dx + dy * dy
         center_dist = abs(y - (ly0 + ly1) / 2)
-        key = (dist, center_dist)
+        key = (dist_sq, center_dist)
         if best_key is None or key < best_key:
             best_key, best_range = key, (start, end)
     return best_range
