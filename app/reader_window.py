@@ -1,16 +1,18 @@
 """Reader window: renders PDF pages, and supports simple-text mode, bookmarks,
-text size / zoom, dark mode, two-page view, and favoriting a book while
-reading it."""
+text size / zoom, dark mode, text selection/copy, two-page view, and
+favoriting a book while reading it."""
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -22,12 +24,90 @@ from PySide6.QtWidgets import (
 )
 
 from .database import Database
+from .text_selection import combined_selected_text, resolve_multi_page_selection, selection_rects
 from .themes import DARK_THEME, LIGHT_THEME
 
 MIN_ZOOM = 0.2
 MAX_ZOOM = 6.0
 VIEWPORT_MARGIN = 24  # px of breathing room so a fitted page never touches the edges
 PAGE_GAP = 12  # px between the two pages in Two-Page View
+FAR_POINT = (10 ** 9, 10 ** 9)     # a page-space point past any real content -- see word_index_at_point
+NEAR_POINT = (-10 ** 9, -10 ** 9)  # ditto, before any real content
+
+
+class TextSelectionOverlay(QWidget):
+    """A transparent overlay sitting on top of the rendered page pixmap.
+    Only shown while "Select Text" mode is on -- lets you drag over the
+    page and highlights exactly the text a real PDF viewer would, in
+    reading order (not just whatever falls inside the drag rectangle:
+    see app/text_selection.py for why that distinction matters). Layered
+    over the pixel-perfect rendered image rather than replacing it, so
+    visual fidelity (fonts, layout, embedded images) is unaffected.
+
+    The overlay only tracks raw mouse positions; all the actual text
+    logic (which words are selected, what rectangles to highlight) lives
+    in ReaderWindow, which knows about pages, zoom, and two-page offsets
+    that this widget doesn't need to care about."""
+
+    def __init__(self, reader, parent=None):
+        super().__init__(parent)
+        self.reader = reader
+        self.setCursor(Qt.IBeamCursor)
+        self._drag_start = None
+        self._drag_current = None
+        self._highlight_rects = []
+        self.hide()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        self._drag_start = event.position()
+        self._drag_current = event.position()
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None:
+            return
+        self._drag_current = event.position()
+        self.reader.update_text_selection(self._drag_start, self._drag_current, finished=False)
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_start is None or event.button() != Qt.LeftButton:
+            return
+        start, end = self._drag_start, self._drag_current
+        self._drag_start = None
+        self._drag_current = None
+        self.reader.update_text_selection(start, end, finished=True)
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        copy_action = menu.addAction("Copy")
+        copy_action.setEnabled(bool(self.reader.selected_text))
+        select_all_action = menu.addAction("Select All")
+        chosen = menu.exec(event.globalPos())
+        if chosen is copy_action:
+            self.reader.copy_selection()
+        elif chosen is select_all_action:
+            self.reader.select_all_text()
+
+    def set_highlight_rects(self, rects):
+        self._highlight_rects = rects
+        self.update()
+
+    def clear(self):
+        self._drag_start = None
+        self._drag_current = None
+        self._highlight_rects = []
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setBrush(QColor(60, 120, 255, 90))
+        painter.setPen(Qt.NoPen)
+        for r in self._highlight_rects:
+            painter.drawRect(r)
+        painter.end()
 
 
 class ReaderWindow(QMainWindow):
@@ -78,6 +158,12 @@ class ReaderWindow(QMainWindow):
         self._pan_start_v = 0
 
         self._current_render_zoom = 1.0
+
+        self.select_text_mode = False
+        self.selected_text = ""
+        self._words_cache = {}  # page_index -> get_text("words") result, built lazily
+        self._left_page_px_width = 0  # set on every two-page render; used to map clicks to the right page
+        self._pending_overlay_size = (0, 0)
 
         self._build_ui()
         self._build_bookmarks_dock()
@@ -144,6 +230,17 @@ class ReaderWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        self.select_text_btn = QPushButton("Select Text")
+        self.select_text_btn.setCheckable(True)
+        self.select_text_btn.clicked.connect(self.toggle_select_text_mode)
+        toolbar.addWidget(self.select_text_btn)
+
+        self.copy_feedback_label = QLabel("")
+        self.copy_feedback_label.setStyleSheet("color: #888; padding-left: 6px;")
+        toolbar.addWidget(self.copy_feedback_label)
+
+        toolbar.addSeparator()
+
         self.simple_btn = QPushButton("Simple Text")
         self.simple_btn.setToolTip("Show only the extracted text of this page")
         self.simple_btn.setCheckable(True)
@@ -207,6 +304,8 @@ class ReaderWindow(QMainWindow):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setWidget(self.page_label)
 
+        self.text_overlay = TextSelectionOverlay(self, self.page_label)
+
         self.text_browser = QTextBrowser()
         self.text_browser.setReadOnly(True)
 
@@ -259,6 +358,17 @@ class ReaderWindow(QMainWindow):
     def _update_mode_visibility(self):
         self.scroll_area.setVisible(not self.simple_text_mode)
         self.text_browser.setVisible(self.simple_text_mode)
+        # Simple Text mode already supports selecting/copying its text
+        # natively (it's a plain QTextBrowser) -- our custom drag-select
+        # overlay only applies to the rendered page image.
+        self.select_text_btn.setEnabled(not self.simple_text_mode)
+        self.select_text_btn.setToolTip(
+            "Text in Simple Text mode can already be selected and copied directly"
+            if self.simple_text_mode else
+            "Drag over text on the page to select it, then Ctrl+C or right-click to copy"
+        )
+        if self.simple_text_mode:
+            self.text_overlay.hide()
         # Two-Page View is a rendered-image concept, so it doesn't apply to
         # Simple Text mode's plain extracted text either.
         self.two_page_btn.setEnabled(not self.simple_text_mode)
@@ -331,10 +441,7 @@ class ReaderWindow(QMainWindow):
         fmt = QImage.Format_RGB888 if pix.n < 4 else QImage.Format_RGBA8888
         image = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt)
         self.page_label.setPixmap(QPixmap.fromImage(image.copy()))
-        # Deferred: the scroll area's scrollbar range isn't updated synchronously
-        # after setPixmap(), so evaluating "is this scrollable" has to wait for
-        # the pending layout pass to actually finish.
-        QTimer.singleShot(0, self._update_pan_cursor)
+        self._sync_overlay_geometry(pix.width, pix.height)
 
     def _render_two_page_spread(self):
         left_idx = self._pair_start(self.current_page)
@@ -369,9 +476,38 @@ class ReaderWindow(QMainWindow):
             )
         painter.end()
 
+        # Text selection needs this later (mouse events arrive well after
+        # this render call returns) to know where the right page starts
+        # in the combined image's pixel space.
+        self._left_page_px_width = left_pix.width
+
         self.page_label.setPixmap(QPixmap.fromImage(combined))
-        # Deferred: see the comment in _render_single_page above.
+        self._sync_overlay_geometry(total_w, total_h)
+
+    def _sync_overlay_geometry(self, width, height):
+        # A new page/zoom/spread invalidates any old highlight immediately.
+        self.text_overlay.clear()
+        self.selected_text = ""
+        self._pending_overlay_size = (width, height)
+        # Deferred: page_label is resized to fill the scroll area's viewport
+        # (setWidgetResizable(True)) and centers the pixmap within itself
+        # (AlignCenter) whenever the page is smaller than the window --  so
+        # the overlay has to be positioned at the pixmap's actual centered
+        # offset within the label, not just the label's own (0, 0) origin,
+        # or it ends up sitting over empty label space instead of the page
+        # itself. But page_label's post-resize size isn't guaranteed to be
+        # up to date synchronously right after setPixmap() -- same reason
+        # _update_pan_cursor below already has to wait a beat -- so this
+        # has to be computed after the pending layout pass actually finishes.
+        QTimer.singleShot(0, self._apply_pending_overlay_geometry)
         QTimer.singleShot(0, self._update_pan_cursor)
+
+    def _apply_pending_overlay_geometry(self):
+        width, height = self._pending_overlay_size
+        offset_x = max(0, (self.page_label.width() - width) // 2)
+        offset_y = max(0, (self.page_label.height() - height) // 2)
+        self.text_overlay.setGeometry(offset_x, offset_y, width, height)
+        self.text_overlay.raise_()
 
     # ------------- Navigation -------------
     def keyPressEvent(self, event):
@@ -384,6 +520,14 @@ class ReaderWindow(QMainWindow):
             return
         if event.key() == Qt.Key_Right:
             self.next_page()
+            event.accept()
+            return
+        if event.matches(QKeySequence.Copy) and self.selected_text:
+            self.copy_selection()
+            event.accept()
+            return
+        if event.matches(QKeySequence.SelectAll) and self.select_text_mode and not self.simple_text_mode:
+            self.select_all_text()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -499,6 +643,134 @@ class ReaderWindow(QMainWindow):
         vbar = self.scroll_area.verticalScrollBar()
         scrollable = hbar.maximum() > hbar.minimum() or vbar.maximum() > vbar.minimum()
         self.page_label.setCursor(Qt.OpenHandCursor if scrollable else Qt.ArrowCursor)
+
+    # ------------- Text selection / copy -------------
+    def toggle_select_text_mode(self, checked):
+        self.select_text_btn.setChecked(checked)
+        self.select_text_mode = checked
+        self.text_overlay.setVisible(checked and not self.simple_text_mode)
+        if not checked:
+            self.text_overlay.clear()
+            self.selected_text = ""
+            self._update_pan_cursor()
+
+    def _get_page_words(self, page_index):
+        """get_text("words") is a real (if fast) PDF-parsing call, and this
+        can be invoked many times per second while dragging -- cache each
+        page's word list the first time it's needed rather than
+        re-extracting it on every mouse-move event."""
+        if page_index not in self._words_cache:
+            self._words_cache[page_index] = self.doc[page_index].get_text("words")
+        return self._words_cache[page_index]
+
+    def _page_and_point_at(self, overlay_pos):
+        """Maps a point in the overlay's pixel coordinates (same space as
+        the rendered pixmap) to (page_index, (x, y)) in that page's own
+        PDF coordinate space -- accounting for the current zoom, and in
+        Two-Page View, for which of the two pages the point actually
+        falls on and that page's x-offset within the combined image.
+        This is exactly the mapping the old implementation got wrong: it
+        always resolved to self.current_page (the left page), regardless
+        of where the point actually was."""
+        zoom = self._current_render_zoom or 1.0
+        x, y = overlay_pos.x(), overlay_pos.y()
+        if not self.two_page_mode:
+            return self.current_page, (x / zoom, y / zoom)
+
+        left_idx = self._pair_start(self.current_page)
+        right_idx = left_idx + 1
+        boundary = self._left_page_px_width + PAGE_GAP / 2
+        if x < boundary or right_idx >= self.page_count:
+            return left_idx, (x / zoom, y / zoom)
+        x_offset = self._left_page_px_width + PAGE_GAP
+        return right_idx, ((x - x_offset) / zoom, y / zoom)
+
+    def _page_x_offset_px(self, page_index):
+        """Inverse of the offset applied in _page_and_point_at -- how far
+        (in overlay pixels) this page's own (0, 0) sits from the combined
+        image's left edge. 0 in single-page mode or for the left page of
+        a spread; the left page's rendered width plus the gap for the
+        right page."""
+        if not self.two_page_mode or page_index == self._pair_start(self.current_page):
+            return 0
+        return self._left_page_px_width + PAGE_GAP
+
+    def update_text_selection(self, start_pos, end_pos, finished):
+        """Recomputes the highlighted rectangles and pending selected text
+        for a drag from start_pos to end_pos (both in overlay pixel
+        coordinates, in either order). Called continuously while dragging
+        (finished=False, for a live-updating highlight -- not just
+        computed once when the mouse button comes up) and once more on
+        release (finished=True)."""
+        if self.doc is None:
+            return
+        rect = QRectF(start_pos, end_pos).normalized()
+        if finished and rect.width() < 3 and rect.height() < 3:
+            # A near-zero-size drag is a click, not a real selection --
+            # clear any existing highlight rather than "select" a sliver.
+            self.text_overlay.set_highlight_rects([])
+            self.selected_text = ""
+            return
+
+        start_page, start_pt = self._page_and_point_at(start_pos)
+        end_page, end_pt = self._page_and_point_at(end_pos)
+        words_by_page = {start_page: self._get_page_words(start_page)}
+        if end_page != start_page:
+            words_by_page[end_page] = self._get_page_words(end_page)
+
+        page_ranges = resolve_multi_page_selection(words_by_page, start_page, start_pt, end_page, end_pt)
+        self._apply_page_ranges(page_ranges, words_by_page)
+
+    def select_all_text(self):
+        """Selects everything on the current page (or both pages of the
+        current spread, in Two-Page View)."""
+        if self.doc is None:
+            return
+        if self.two_page_mode:
+            left_idx = self._pair_start(self.current_page)
+            right_idx = left_idx + 1
+            start_page, end_page = left_idx, (right_idx if right_idx < self.page_count else left_idx)
+        else:
+            start_page = end_page = self.current_page
+
+        words_by_page = {start_page: self._get_page_words(start_page)}
+        if end_page != start_page:
+            words_by_page[end_page] = self._get_page_words(end_page)
+        page_ranges = resolve_multi_page_selection(words_by_page, start_page, NEAR_POINT, end_page, FAR_POINT)
+        self._apply_page_ranges(page_ranges, words_by_page)
+        if self.selected_text:
+            self.copy_feedback_label.setText(f"{len(self.selected_text)} characters selected")
+            QTimer.singleShot(2500, lambda: self.copy_feedback_label.setText(""))
+
+    def _apply_page_ranges(self, page_ranges, words_by_page):
+        """Shared by update_text_selection and select_all_text: turns a
+        list of (page_index, start_word, end_word) ranges into the actual
+        selected text and the overlay's highlight rectangles (each scaled
+        by zoom and shifted by that page's x-offset in the combined
+        image, so a right-page rect in Two-Page View lands in the right
+        place)."""
+        self.selected_text = combined_selected_text(words_by_page, page_ranges)
+        highlight_rects = []
+        zoom = self._current_render_zoom or 1.0
+        for (page_idx, s, e) in page_ranges:
+            x_offset = self._page_x_offset_px(page_idx)
+            for (rx0, ry0, rx1, ry1) in selection_rects(words_by_page[page_idx], s, e):
+                highlight_rects.append(QRectF(
+                    rx0 * zoom + x_offset, ry0 * zoom, (rx1 - rx0) * zoom, (ry1 - ry0) * zoom,
+                ))
+        self.text_overlay.set_highlight_rects(highlight_rects)
+
+
+
+    def copy_selection(self):
+        if not self.selected_text:
+            return
+        QApplication.clipboard().setText(self.selected_text)
+        self._flash_copy_feedback(len(self.selected_text))
+
+    def _flash_copy_feedback(self, n_chars):
+        self.copy_feedback_label.setText(f"Copied {n_chars} character{'s' if n_chars != 1 else ''}")
+        QTimer.singleShot(2500, lambda: self.copy_feedback_label.setText(""))
 
     def prev_page(self):
         if self.two_page_mode:

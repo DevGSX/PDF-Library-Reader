@@ -244,6 +244,17 @@ and a distraction-free "simple text" reading mode.
   extracted text of the page, reflowed to your chosen font size — good for
   text-heavy books, bad for pages that are mostly images/diagrams. Its text
   can be selected and copied directly, like any normal text view.
+- **Select Text** — click "Select Text" in the reader toolbar, then drag over
+  the rendered page like you would in Adobe Acrobat or any other PDF viewer:
+  the highlight follows real reading order rather than a blocky rectangle, so
+  dragging from partway through one line to partway through a line several
+  lines down correctly grabs every full line in between, not just whatever
+  happens to fall inside the drag box. Works the same way across a Two-Page
+  View spread, including a drag that starts on one page and ends on the
+  other. Ctrl+C or right-click → Copy copies the selection; right-click →
+  Select All grabs the whole page (or both pages of a spread). Not available
+  in Simple Text mode, since that view's plain text can already be selected
+  and copied directly.
 - **Two-Page View** — shows two pages side by side like a book spread,
   handy on a wide screen. Prev/Next, jumping to a specific page, and
   scrolling past the edge all move by the full spread rather than one page
