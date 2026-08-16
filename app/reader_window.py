@@ -1,14 +1,18 @@
 """Reader window: renders PDF pages, and supports simple-text mode, bookmarks,
 text size / zoom, dark mode, text selection/copy, two-page view, and
 favoriting a book while reading it."""
+import os
+
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
 from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDockWidget,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -29,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from .database import Database
+from .highlights_notes import build_highlights_notes
 from .search_dialog import TextSearchDialog
 from .text_selection import (
     char_index_at_point,
@@ -251,22 +256,43 @@ class TextSelectionOverlay(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setPen(Qt.NoPen)
+        painter.setRenderHint(QPainter.Antialiasing)
         # Saved highlights draw first (underneath), each in its own
-        # stored color, at a marker-pen-like alpha so the text beneath
-        # stays readable.
+        # stored color and style, so the just-finished selection (drawn
+        # last, below) is never visually lost underneath one it overlaps.
         for h in self._saved_highlights:
-            color = QColor(h["color"])
-            color.setAlpha(110)
-            painter.setBrush(color)
-            for r in h["rects"]:
-                painter.drawRect(r)
-        # The in-progress/just-finished selection draws on top, so it's
-        # never visually lost underneath a saved highlight it overlaps.
+            self._paint_highlight(painter, h["rects"], QColor(h["color"]), h.get("style", "fill"))
+        painter.setPen(Qt.NoPen)
         painter.setBrush(self._live_color)
         for r in self._highlight_rects:
             painter.drawRect(r)
         painter.end()
+
+    @staticmethod
+    def _paint_highlight(painter, rects, color, style):
+        if style == "underline":
+            pen_color = QColor(color)
+            pen_color.setAlpha(220)
+            painter.setPen(QPen(pen_color, 2))
+            painter.setBrush(Qt.NoBrush)
+            for r in rects:
+                y = r.bottom() - 1
+                painter.drawLine(r.left(), y, r.right(), y)
+        elif style == "strikethrough":
+            pen_color = QColor(color)
+            pen_color.setAlpha(220)
+            painter.setPen(QPen(pen_color, 2))
+            painter.setBrush(Qt.NoBrush)
+            for r in rects:
+                y = r.top() + r.height() / 2
+                painter.drawLine(r.left(), y, r.right(), y)
+        else:  # "fill" -- a translucent highlighter-marker block
+            fill_color = QColor(color)
+            fill_color.setAlpha(110)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(fill_color)
+            for r in rects:
+                painter.drawRect(r)
 
 
 class SelectionPopup(QWidget):
@@ -323,18 +349,23 @@ class SelectionPopup(QWidget):
 
 
 class HighlightDialog(QDialog):
-    """Prompts for a highlight's name and color -- used both when saving a
-    brand new highlight and when editing an existing one. The color swatch
-    always starts on whatever color was already chosen (the current
-    default when saving new, or the highlight's own color when editing),
-    and "Choose Color..." opens the full picker (basic swatches, a
-    spectrum/wheel, and exact RGB/HSV/hex entry) to change it -- letting
+    """Prompts for a highlight's name, color, and style -- used both when
+    saving a brand new highlight and when editing an existing one. The
+    color swatch always starts on whatever color was already chosen (the
+    current default when saving new, or the highlight's own color when
+    editing), and "Choose Color..." opens the full picker (basic swatches,
+    a spectrum/wheel, and exact RGB/HSV/hex entry) to change it -- letting
     someone highlight different passages in different colors of their own
-    choosing, one save at a time. When editing an existing highlight,
-    text_preview shows what was actually highlighted, read-only, so it's
-    easy to tell highlights apart without having to jump to the page."""
+    choosing, one save at a time. Style picks between a solid highlighter
+    fill, an underline, or a strikethrough, matching the distinct
+    annotation tools a real PDF editor offers rather than just one look.
+    When editing an existing highlight, text_preview shows what was
+    actually highlighted, read-only, so it's easy to tell highlights
+    apart without having to jump to the page."""
 
-    def __init__(self, title, initial_name, initial_color, text_preview=None, parent=None):
+    STYLES = [("fill", "Highlight (fill)"), ("underline", "Underline"), ("strikethrough", "Strikethrough")]
+
+    def __init__(self, title, initial_name, initial_color, initial_style="fill", text_preview=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self._color = QColor(initial_color)
@@ -355,6 +386,13 @@ class HighlightDialog(QDialog):
         color_row.addWidget(choose_btn)
         color_row.addStretch()
         form.addRow("Color", color_row)
+
+        self.style_combo = QComboBox()
+        for value, label in self.STYLES:
+            self.style_combo.addItem(label, value)
+        idx = self.style_combo.findData(initial_style)
+        self.style_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        form.addRow("Style", self.style_combo)
         layout.addLayout(form)
 
         if text_preview is not None:
@@ -389,8 +427,8 @@ class HighlightDialog(QDialog):
             self._update_swatch()
 
     def result_values(self):
-        """(name, QColor) -- call only after exec() returns QDialog.Accepted."""
-        return self.name_edit.text().strip(), self._color
+        """(name, QColor, style) -- call only after exec() returns QDialog.Accepted."""
+        return self.name_edit.text().strip(), self._color, self.style_combo.currentData()
 
 
 class ReaderWindow(QMainWindow):
@@ -651,6 +689,13 @@ class ReaderWindow(QMainWindow):
         remove_highlight_btn.clicked.connect(self.remove_selected_highlight)
         layout.addWidget(remove_highlight_btn)
 
+        export_highlights_btn = QPushButton("Export Highlights...")
+        export_highlights_btn.setToolTip(
+            "Save every highlight in this book as a plain-text notes file (Markdown)"
+        )
+        export_highlights_btn.clicked.connect(self.export_highlights_notes)
+        layout.addWidget(export_highlights_btn)
+
         dock.setWidget(holder)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
@@ -821,6 +866,7 @@ class ReaderWindow(QMainWindow):
         self.selection_popup.hide()
         self._pending_overlay_size = (width, height)
         self._load_saved_highlights_for_current_view()
+        self._check_no_selectable_text()
         # Deferred: page_label is resized to fill the scroll area's viewport
         # (setWidgetResizable(True)) and centers the pixmap within itself
         # (AlignCenter) whenever the page is smaller than the window --  so
@@ -988,6 +1034,8 @@ class ReaderWindow(QMainWindow):
             self.selected_text = ""
             self.selection_popup.hide()
             self._update_pan_cursor()
+        else:
+            self._check_no_selectable_text()
 
     def _get_page_chars(self, page_index):
         """get_text("rawdict") is a real (if fast) PDF-parsing call, and
@@ -1120,6 +1168,15 @@ class ReaderWindow(QMainWindow):
         self.text_overlay.set_highlight_rects(highlight_rects)
 
     # ------------- Saved (persistent) highlights -------------
+    def _visible_page_indices(self):
+        """The page index(es) currently on screen -- just current_page in
+        single-page mode, or the current spread's pages in Two-Page View."""
+        if not self.two_page_mode:
+            return [self.current_page]
+        left_idx = self._pair_start(self.current_page)
+        right_idx = left_idx + 1
+        return [left_idx] + ([right_idx] if right_idx < self.page_count else [])
+
     def _load_saved_highlights_for_current_view(self):
         """Loads every saved highlight for whichever page(s) are currently
         visible, converts each one's stored PDF-point rects to this
@@ -1130,22 +1187,36 @@ class ReaderWindow(QMainWindow):
         if self.doc is None:
             return
         zoom = self._current_render_zoom or 1.0
-        pages = [self.current_page]
-        if self.two_page_mode:
-            left_idx = self._pair_start(self.current_page)
-            right_idx = left_idx + 1
-            pages = [left_idx] + ([right_idx] if right_idx < self.page_count else [])
 
         overlay_highlights = []
-        for page_idx in pages:
+        for page_idx in self._visible_page_indices():
             x_offset = self._page_x_offset_px(page_idx)
             for h in self.db.get_highlights_for_page(self.book_id, page_idx):
                 rects = [
                     QRectF(x0 * zoom + x_offset, y0 * zoom, (x1 - x0) * zoom, (y1 - y0) * zoom)
                     for (x0, y0, x1, y1) in h["rects"]
                 ]
-                overlay_highlights.append({"id": h["id"], "color": QColor(h["color"]), "rects": rects})
+                overlay_highlights.append({
+                    "id": h["id"], "color": QColor(h["color"]), "rects": rects,
+                    "style": h.get("style") or "fill",
+                })
         self.text_overlay.set_saved_highlights(overlay_highlights)
+
+    def _check_no_selectable_text(self):
+        """While Select Text mode is on, if the current page (or both
+        pages of a spread) has no extractable text at all -- most likely
+        a scanned image with no OCR text layer -- let the user know via
+        the same feedback label used for copy/select-all messages,
+        instead of leaving them to wonder why dragging over the page
+        silently does nothing."""
+        if self.doc is None or not self.select_text_mode:
+            return
+        has_text = any(self._get_page_chars(p) for p in self._visible_page_indices())
+        if not has_text:
+            self.copy_feedback_label.setText(
+                "No selectable text on this page \u2014 it may be a scanned image"
+            )
+            QTimer.singleShot(4000, lambda: self.copy_feedback_label.setText(""))
 
     def save_selection_as_highlight(self):
         if not self.selected_text or not self._last_selection_page_ranges:
@@ -1153,7 +1224,7 @@ class ReaderWindow(QMainWindow):
         dialog = HighlightDialog("Save Highlight", "", self.highlight_color, parent=self)
         if dialog.exec() != QDialog.Accepted:
             return
-        custom_name, color = dialog.result_values()
+        custom_name, color, style = dialog.result_values()
         chars_by_page = self._last_selection_chars_by_page
         for (page_idx, s, e) in self._last_selection_page_ranges:
             chars = chars_by_page.get(page_idx)
@@ -1162,7 +1233,9 @@ class ReaderWindow(QMainWindow):
             rects = selection_rects(chars, s, e)
             text = selected_text_for_range(chars, s, e)
             label = custom_name or self._default_highlight_label(page_idx)
-            self.db.add_highlight(self.book_id, page_idx, color.name(), rects, text=text, label=label)
+            self.db.add_highlight(
+                self.book_id, page_idx, color.name(), rects, text=text, label=label, style=style
+            )
         self.selected_text = ""
         self.text_overlay.set_highlight_rects([])
         self.selection_popup.hide()
@@ -1190,14 +1263,15 @@ class ReaderWindow(QMainWindow):
             return
         dialog = HighlightDialog(
             "Edit Highlight", highlight["label"], highlight["color"],
-            text_preview=highlight["text"], parent=self,
+            initial_style=highlight.get("style") or "fill", text_preview=highlight["text"], parent=self,
         )
         if dialog.exec() != QDialog.Accepted:
             return
-        name, color = dialog.result_values()
+        name, color, style = dialog.result_values()
         label = name or f"Page {highlight['page_number'] + 1}"
         self.db.update_highlight_label(highlight_id, label)
         self.db.update_highlight_color(highlight_id, color.name())
+        self.db.update_highlight_style(highlight_id, style)
         self._load_saved_highlights_for_current_view()
         self.refresh_highlights()
 
@@ -1442,6 +1516,30 @@ class ReaderWindow(QMainWindow):
         self.db.delete_highlight(item.data(Qt.UserRole))
         self.refresh_highlights()
         self._load_saved_highlights_for_current_view()
+
+    def export_highlights_notes(self):
+        highlights = self.db.get_highlights(self.book_id)
+        if not highlights:
+            QMessageBox.information(self, "No highlights", "This book doesn't have any saved highlights yet.")
+            return
+        book_title = self.book["title"] or "Untitled"
+        default_name = f"{book_title} - Highlights.md"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Highlights", os.path.expanduser(f"~/{default_name}"),
+            "Markdown files (*.md);;Text files (*.txt);;All files (*)",
+        )
+        if not path:
+            return
+        content = build_highlights_notes(book_title, highlights)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", f"Couldn't write that file:\n{exc}")
+            return
+        QMessageBox.information(
+            self, "Export complete", f"Exported {len(highlights)} highlight(s) to:\n{path}"
+        )
 
     # ------------- Lifecycle -------------
     def showEvent(self, event):

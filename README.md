@@ -251,32 +251,46 @@ and a distraction-free "simple text" reading mode.
   snap to a whole word at a time — and it follows real reading order rather
   than a blocky rectangle, so dragging from partway through one line to
   partway through a line several lines down correctly grabs every full line
-  in between, not just whatever happens to fall inside the drag box. Works
-  the same way across a Two-Page View spread, including a drag that starts
-  on one page and ends on the other. A hyphen at the end of a wrapped line
-  is detected and removed from copied text so words rejoin correctly
-  ("tele-" / "photo" → "telephoto"), while a genuine hyphenated word that
-  happens to also end a line is left alone. Double-click selects a word,
-  triple-click selects the whole paragraph. Dragging near the top/bottom
-  edge of the window auto-scrolls so you can extend a selection past what's
-  currently visible. A small popup appears next to a finished selection
-  with **Copy** and **Search in Book** right there; the same options (plus
-  **Select All** and **Save Highlight...**) are on the right-click menu, and
-  Ctrl+C / Ctrl+A work too. Not available in Simple Text mode, since that
-  view's plain text can already be selected and copied directly.
-- **Highlights** — right-click a selection and choose **Save Highlight...**
-  to pick a color and keep it permanently on the page, like a real
-  highlighter pen. Saved highlights show up whenever you're reading that
-  page, whether or not Select Text mode is on, and scale correctly with
-  zoom. Right-click an existing highlight for **Delete** or **Change
-  Color...** — colors come from a full picker (basic swatches, a spectrum,
-  or exact RGB/HSV/hex values). The "Highlight Color" toolbar button sets
-  the default color used for both the live selection and new highlights.
-  Every highlight also appears in the Highlights section of the bookmarks
-  panel, named "Page N" by default, so you can jump straight to it later.
-  Highlights are included in **Full Export** and **Selected Books Export**
-  (the variants that carry your reading data) and left out of the **Share**
-  variants, same as your reading status and favorites.
+  in between, not just whatever happens to fall inside the drag box. A
+  genuine two-column academic-paper-style layout is detected and read left
+  column fully, then right column fully, rather than however the PDF's own
+  internal ordering happens to interleave them. Works the same way across a
+  Two-Page View spread, including a drag that starts on one page and ends
+  on the other. A hyphen at the end of a wrapped line is detected and
+  removed from copied text so words rejoin correctly ("tele-" / "photo" →
+  "telephoto"), while a genuine hyphenated word that happens to also end a
+  line is left alone. Double-click selects a word, triple-click selects the
+  whole paragraph. Dragging near the top/bottom edge of the window
+  auto-scrolls so you can extend a selection past what's currently visible.
+  A small popup appears next to a finished selection with **Copy** and
+  **Search in Book** right there; the same options (plus **Select All** and
+  **Save Highlight...**) are on the right-click menu, and Ctrl+C / Ctrl+A
+  work too. If a page has no extractable text at all (a scanned image with
+  no OCR layer, most likely), a small message says so instead of leaving
+  you to wonder why nothing's happening. Not available in Simple Text mode,
+  since that view's plain text can already be selected and copied directly.
+- **Highlights** — right-click a selection (or use the "Save Highlight"
+  button in the selection popup) to pick a color and a style — a solid
+  highlighter-style **fill**, an **underline**, or a **strikethrough**, the
+  same distinct annotation tools a real PDF editor offers — and keep it
+  permanently on the page. The "Highlight Color" toolbar button sets the
+  default color used for both the live selection and new highlights, so
+  you're not starting from scratch every time. Saved highlights show up whenever you're reading
+  that page, whether or not Select Text mode is on, and scale correctly
+  with zoom. Right-click an existing highlight (on the page, or in the
+  sidebar list) for **Delete** or **Edit Highlight...**, which lets you
+  change its name, color, and style, and shows a read-only preview of the
+  highlighted text so you can tell highlights apart without jumping to the
+  page. Naming defaults to "Page N" if you leave it blank, or "Page N - 1",
+  "Page N - 2"... for additional highlights on the same page. Every
+  highlight also appears in the Highlights section of the bookmarks panel,
+  right below your bookmarks, so you can jump straight to it later — and a
+  dedicated **Export Highlights...** button there saves everything you've
+  highlighted in that book as a standalone Markdown notes file, similar to
+  Kindle's "My Clippings" — handy for actually revisiting what you
+  highlighted, separately from the archive export/import (which moves your
+  library around and carries highlights along automatically, but only in
+  the export variants that include your reading data, not the Share ones).
 - **Two-Page View** — shows two pages side by side like a book spread,
   handy on a wide screen. Prev/Next, jumping to a specific page, and
   scrolling past the edge all move by the full spread rather than one page

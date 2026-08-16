@@ -41,8 +41,19 @@ _WRAP_HYPHEN_CHARS = {"-", "\u2010"}
 def chars_from_rawdict(rawdict):
     """Flattens PyMuPDF's page.get_text("rawdict") output into the flat
     per-character tuple list every other function in this module expects.
-    Blocks/lines/spans/chars are already emitted in reading order, so no
-    sorting is needed -- just flattening."""
+
+    PyMuPDF's own block order generally follows the PDF's content stream,
+    not necessarily visual reading order -- for a normal single-column
+    page these are almost always the same thing, but for a two-column
+    layout (a common academic-paper style) they can genuinely differ: a
+    PDF generator is free to write the right column's text before the
+    left column's, and MuPDF doesn't reorder for that. So this also runs
+    the result through _reorder_for_columns(), which detects a clean
+    two-column split by looking for a real horizontal gap between two
+    clusters of content and, only when it finds one, reorders so the
+    left column reads fully before the right column. It leaves everything
+    else (including ordinary single-column pages, which are the vast
+    majority) completely untouched."""
     chars = []
     for block in rawdict.get("blocks", []):
         block_no = block.get("number", 0)
@@ -53,7 +64,118 @@ def chars_from_rawdict(rawdict):
                 for ch in span["chars"]:
                     x0, y0, x1, y1 = ch["bbox"]
                     chars.append((x0, y0, x1, y1, ch["c"], block_no, line_no))
-    return chars
+    return _reorder_for_columns(chars)
+
+
+def _merge_x_ranges(ranges):
+    """Sorted, non-overlapping x-interval bands covering `ranges` (a list
+    of (x0, x1) tuples) -- the classic interval-merge, used here to find
+    how many distinct horizontal "clusters" of content a page's blocks
+    fall into."""
+    if not ranges:
+        return []
+    ranges = sorted(ranges)
+    merged = [list(ranges[0])]
+    for (x0, x1) in ranges[1:]:
+        if x0 <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], x1)
+        else:
+            merged.append([x0, x1])
+    return [tuple(r) for r in merged]
+
+
+def _reorder_for_columns(chars):
+    """Reorders `chars` so a genuine two-column layout reads left column
+    fully, then right column fully -- rather than whatever order PyMuPDF's
+    blocks happen to come in. Works at the LINE level rather than the
+    block level: PyMuPDF's own block grouping isn't reliably column-aware
+    either -- it can lump both columns' lines into a single block even
+    though each individual line's position clearly belongs to one side or
+    the other -- so anchoring to blocks would miss exactly the cases that
+    matter most here.
+
+    Detection is deliberately conservative: a full-width line (like a
+    title or header spanning both columns) is set aside from the
+    left/right split and reinserted in its natural top-to-bottom position
+    -- before the columns if it sits above them, after if it sits below.
+    If the remaining lines don't cleanly separate into two clearly-gapped
+    horizontal bands with real content in both, `chars` is returned
+    completely unchanged: forcing a column split onto an ordinary
+    single-column page (the vast majority of PDFs) would do more harm
+    than good, and getting an ambiguous or genuinely more complex layout
+    wrong is worse than leaving PyMuPDF's own order alone.
+
+    A synthetic block/line numbering is assigned to the reordered output
+    so downstream paragraph-break logic (in selected_text()) still makes
+    sense: each of the four groups below (content above the columns, left
+    column, right column, content below) always starts a fresh "block",
+    with further breaks inside a group wherever the original block number
+    changes -- so paragraph structure is preserved within a column even
+    though PyMuPDF's own grouping didn't keep the columns apart."""
+    if not chars:
+        return chars
+
+    lines = _group_into_lines(chars)  # (y0, y1, start, end)
+    if len(lines) < 4:
+        return chars
+
+    info = []  # (y0, start, end, x0, x1, original_block_no)
+    for (y0, _y1, s, e) in lines:
+        info.append((
+            y0, s, e,
+            min(chars[i][X0] for i in range(s, e + 1)),
+            max(chars[i][X1] for i in range(s, e + 1)),
+            chars[s][BLOCK],
+        ))
+
+    page_x0 = min(li[3] for li in info)
+    page_x1 = max(li[4] for li in info)
+    page_width = page_x1 - page_x0
+    if page_width <= 0:
+        return chars
+
+    narrow = [li for li in info if (li[4] - li[3]) <= 0.5 * page_width]
+    wide = [li for li in info if (li[4] - li[3]) > 0.5 * page_width]
+    if len(narrow) < 2:
+        return chars
+
+    bands = _merge_x_ranges([(li[3], li[4]) for li in narrow])
+    if len(bands) != 2:
+        return chars
+    (lo0, lo1), (ro0, ro1) = bands
+    if ro0 - lo1 < 12:
+        return chars  # not a convincing gutter -- could just be uneven paragraph widths
+
+    left_center, right_center = (lo0 + lo1) / 2, (ro0 + ro1) / 2
+    left_lines, right_lines = [], []
+    for li in narrow:
+        cx = (li[3] + li[4]) / 2
+        (left_lines if abs(cx - left_center) <= abs(cx - right_center) else right_lines).append(li)
+    if not left_lines or not right_lines:
+        return chars  # everything narrow landed on one side -- not really two columns
+
+    left_lines.sort(key=lambda li: li[0])
+    right_lines.sort(key=lambda li: li[0])
+    columns_top_y = min(li[0] for li in left_lines + right_lines)
+
+    before_columns = sorted((li for li in wide if li[0] < columns_top_y), key=lambda li: li[0])
+    after_columns = sorted((li for li in wide if li[0] >= columns_top_y), key=lambda li: li[0])
+
+    new_chars = []
+    new_block_no = -1
+    for group in (before_columns, left_lines, right_lines, after_columns):
+        prev_orig_block = object()  # always start a fresh "block" at a group boundary
+        new_line_no = -1
+        for (_y0, s, e, _x0, _x1, orig_block) in group:
+            new_line_no += 1
+            if orig_block != prev_orig_block:
+                new_block_no += 1
+                new_line_no = 0
+                prev_orig_block = orig_block
+            for i in range(s, e + 1):
+                c = chars[i]
+                new_chars.append((c[X0], c[Y0], c[X1], c[Y1], c[CHAR], new_block_no, new_line_no))
+    return new_chars
 
 
 def char_index_at_point(chars, x, y):

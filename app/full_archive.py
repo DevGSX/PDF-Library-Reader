@@ -60,6 +60,7 @@ def build_manifest(db, book_ids=None, include_reading_state=True):
                 {
                     "page_number": h["page_number"], "color": h["color"],
                     "label": h["label"] or "", "text": h["text"] or "", "rects": h["rects"],
+                    "style": h.get("style") or "fill",
                 }
                 for h in db.get_highlights(book_id)
             ]
@@ -207,6 +208,7 @@ def apply_archive(db, zip_path, destination_dir):
                 db.add_highlight(
                     book["id"], h["page_number"], h["color"], h["rects"],
                     text=h.get("text") or "", label=h.get("label") or "",
+                    style=h.get("style") or "fill",
                 )
                 highlights_added += 1
 

@@ -56,6 +56,7 @@ class Database:
                 color TEXT NOT NULL,
                 text TEXT,
                 rects TEXT NOT NULL,
+                style TEXT DEFAULT 'fill',
                 created_date TEXT NOT NULL,
                 FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
             );
@@ -80,6 +81,7 @@ class Database:
         )
         self.conn.commit()
         self._migrate_books_table()
+        self._migrate_highlights_table()
 
     def _migrate_books_table(self):
         """Add columns introduced after the initial release, for people upgrading
@@ -97,6 +99,17 @@ class Database:
         for col, decl in new_columns.items():
             if col not in existing_cols:
                 self.conn.execute(f"ALTER TABLE books ADD COLUMN {col} {decl}")
+        self.conn.commit()
+
+    def _migrate_highlights_table(self):
+        """Same idea as _migrate_books_table, for highlights created
+        before the "style" column (fill / underline / strikethrough)
+        existed -- every highlight from before that point is treated as
+        a plain fill, which is exactly what it visually was."""
+        cur = self.conn.execute("PRAGMA table_info(highlights)")
+        existing_cols = {row[1] for row in cur.fetchall()}
+        if "style" not in existing_cols:
+            self.conn.execute("ALTER TABLE highlights ADD COLUMN style TEXT DEFAULT 'fill'")
         self.conn.commit()
 
     # ---------------- Books ----------------
@@ -479,15 +492,17 @@ class Database:
         self.conn.commit()
 
     # ---------------- Highlights ----------------
-    def add_highlight(self, book_id, page_number, color, rects, text="", label=""):
+    def add_highlight(self, book_id, page_number, color, rects, text="", label="", style="fill"):
         """rects: a JSON-serializable list of [x0, y0, x1, y1] in the
         page's own PDF-point coordinate space (zoom-independent, so a
-        saved highlight redraws correctly at any zoom level later)."""
+        saved highlight redraws correctly at any zoom level later).
+        style: "fill" (a translucent highlighter-style block, the
+        default), "underline", or "strikethrough"."""
         now = datetime.now().isoformat()
         cur = self.conn.execute(
-            "INSERT INTO highlights (book_id, page_number, label, color, text, rects, created_date) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (book_id, page_number, label, color, text, json.dumps(rects), now),
+            "INSERT INTO highlights (book_id, page_number, label, color, text, rects, style, created_date) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (book_id, page_number, label, color, text, json.dumps(rects), style, now),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -518,6 +533,10 @@ class Database:
 
     def update_highlight_label(self, highlight_id, label):
         self.conn.execute("UPDATE highlights SET label = ? WHERE id = ?", (label, highlight_id))
+        self.conn.commit()
+
+    def update_highlight_style(self, highlight_id, style):
+        self.conn.execute("UPDATE highlights SET style = ? WHERE id = ?", (style, highlight_id))
         self.conn.commit()
 
     def delete_highlight(self, highlight_id):
