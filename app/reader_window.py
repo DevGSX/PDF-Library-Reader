@@ -2,13 +2,18 @@
 text size / zoom, dark mode, text selection/copy, two-page view, and
 favoriting a book while reading it."""
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QColorDialog,
+    QDialog,
     QDockWidget,
+    QFormLayout,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -24,14 +29,25 @@ from PySide6.QtWidgets import (
 )
 
 from .database import Database
-from .text_selection import combined_selected_text, resolve_multi_page_selection, selection_rects
+from .search_dialog import TextSearchDialog
+from .text_selection import (
+    char_index_at_point,
+    chars_from_rawdict,
+    combined_selected_text,
+    paragraph_bounds_at_index,
+    resolve_multi_page_selection,
+    selected_text as selected_text_for_range,
+    selection_rects,
+    word_bounds_at_index,
+)
 from .themes import DARK_THEME, LIGHT_THEME
 
 MIN_ZOOM = 0.2
 MAX_ZOOM = 6.0
 VIEWPORT_MARGIN = 24  # px of breathing room so a fitted page never touches the edges
 PAGE_GAP = 12  # px between the two pages in Two-Page View
-FAR_POINT = (10 ** 9, 10 ** 9)     # a page-space point past any real content -- see word_index_at_point
+DEFAULT_HIGHLIGHT_COLOR = "#3878FF"
+FAR_POINT = (10 ** 9, 10 ** 9)     # a page-space point past any real content -- see char_index_at_point
 NEAR_POINT = (-10 ** 9, -10 ** 9)  # ditto, before any real content
 
 
@@ -56,13 +72,40 @@ class TextSelectionOverlay(QWidget):
         self._drag_start = None
         self._drag_current = None
         self._highlight_rects = []
+        self._saved_highlights = []
+        self._live_color = QColor(60, 120, 255, 90)
+        self._click_count = 0
+        self._last_click_pos = None
+        self._click_timer = QElapsedTimer()
+        self._autoscroll_direction = 0
+        self._autoscroll_timer = QTimer(self)
+        self._autoscroll_timer.setInterval(30)
+        self._autoscroll_timer.timeout.connect(self._autoscroll_step)
         self.hide()
 
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
-        self._drag_start = event.position()
-        self._drag_current = event.position()
+        pos = event.position()
+        if self._is_rapid_repeat_click(pos):
+            self._click_count += 1
+        else:
+            self._click_count = 1
+        self._register_click(pos)
+
+        if self._click_count >= 3:
+            # Qt has no native triple-click event -- the 2nd click of any
+            # rapid sequence already arrives as mouseDoubleClickEvent
+            # below, so a 3rd press this close in time and position to it
+            # is the triple-click.
+            self.reader.select_word_or_paragraph_at(pos, paragraph=True)
+            self.reader.show_selection_popup()
+            self._click_count = 0  # a 4th click starts a fresh count, not "quadruple"
+            return
+
+        self.reader.selection_popup.hide()  # a fresh drag replaces whatever was selected before
+        self._drag_start = pos
+        self._drag_current = pos
         self.update()
 
     def mouseMoveEvent(self, event):
@@ -70,6 +113,7 @@ class TextSelectionOverlay(QWidget):
             return
         self._drag_current = event.position()
         self.reader.update_text_selection(self._drag_start, self._drag_current, finished=False)
+        self._update_autoscroll(self._drag_current)
         self.update()
 
     def mouseReleaseEvent(self, event):
@@ -78,22 +122,126 @@ class TextSelectionOverlay(QWidget):
         start, end = self._drag_start, self._drag_current
         self._drag_start = None
         self._drag_current = None
+        self._autoscroll_timer.stop()
+        self._autoscroll_direction = 0
         self.reader.update_text_selection(start, end, finished=True)
+        self.reader.show_selection_popup()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        pos = event.position()
+        self._click_count = 2
+        self._register_click(pos)
+        self.reader.select_word_or_paragraph_at(pos, paragraph=False)
+        self.reader.show_selection_popup()
+
+    def _is_rapid_repeat_click(self, pos):
+        if self._last_click_pos is None or not self._click_timer.isValid():
+            return False
+        close_enough = (pos - self._last_click_pos).manhattanLength() < 6
+        fast_enough = self._click_timer.elapsed() < QApplication.doubleClickInterval()
+        return close_enough and fast_enough
+
+    def _register_click(self, pos):
+        self._last_click_pos = pos
+        self._click_timer.restart()
+
+    def _update_autoscroll(self, drag_pos):
+        """While dragging a selection, if the mouse is near the top/bottom
+        edge of the visible scroll area, keep scrolling in that direction
+        for as long as it stays there -- otherwise a selection that needs
+        to extend past what's currently on screen is simply impossible to
+        make, since the mouse can't drag past the viewport's own edge."""
+        viewport_pos = self.mapTo(self.reader.scroll_area.viewport(), drag_pos.toPoint())
+        viewport_h = self.reader.scroll_area.viewport().height()
+        margin = 40
+        if viewport_pos.y() < margin:
+            self._autoscroll_direction = -1
+        elif viewport_pos.y() > viewport_h - margin:
+            self._autoscroll_direction = 1
+        else:
+            self._autoscroll_direction = 0
+
+        if self._autoscroll_direction != 0 and not self._autoscroll_timer.isActive():
+            self._autoscroll_timer.start()
+        elif self._autoscroll_direction == 0:
+            self._autoscroll_timer.stop()
+
+    def _autoscroll_step(self):
+        if self._autoscroll_direction == 0 or self._drag_start is None:
+            self._autoscroll_timer.stop()
+            return
+        vbar = self.reader.scroll_area.verticalScrollBar()
+        vbar.setValue(vbar.value() + self._autoscroll_direction * 18)
+        # The page hasn't moved, only the viewport's scroll position, so
+        # the drag's live highlight needs to be recomputed against the
+        # same (unchanged) overlay-space coordinates -- but since the
+        # mouse itself hasn't moved, re-driving the same current drag
+        # point is enough to keep the highlight extending correctly.
+        self.reader.update_text_selection(self._drag_start, self._drag_current, finished=False)
 
     def contextMenuEvent(self, event):
+        pos = event.position()
         menu = QMenu(self)
-        copy_action = menu.addAction("Copy")
-        copy_action.setEnabled(bool(self.reader.selected_text))
+        if self.reader.selected_text:
+            copy_action = menu.addAction("Copy")
+            search_action = menu.addAction("Search in Book")
+            save_action = menu.addAction("Save Highlight...")
+            select_all_action = menu.addAction("Select All")
+            chosen = menu.exec(event.globalPos())
+            if chosen is copy_action:
+                self.reader.copy_selection()
+            elif chosen is search_action:
+                self.reader.search_selection_in_book()
+            elif chosen is save_action:
+                self.reader.save_selection_as_highlight()
+            elif chosen is select_all_action:
+                self.reader.select_all_text()
+            return
+
+        existing = self.highlight_at_point(pos)
+        if existing is not None:
+            edit_action = menu.addAction("Edit Highlight...")
+            delete_action = menu.addAction("Delete Highlight")
+            chosen = menu.exec(event.globalPos())
+            if chosen is edit_action:
+                self.reader.edit_highlight(existing["id"])
+            elif chosen is delete_action:
+                self.reader.delete_highlight(existing["id"])
+            return
+
         select_all_action = menu.addAction("Select All")
         chosen = menu.exec(event.globalPos())
-        if chosen is copy_action:
-            self.reader.copy_selection()
-        elif chosen is select_all_action:
+        if chosen is select_all_action:
             self.reader.select_all_text()
 
     def set_highlight_rects(self, rects):
         self._highlight_rects = rects
         self.update()
+
+    def set_live_color(self, color):
+        self._live_color = QColor(color)
+        self.update()
+
+    def set_saved_highlights(self, highlights):
+        """highlights: a list of {"id": int, "color": QColor, "rects":
+        [QRectF, ...]} -- already converted to this overlay's own pixel
+        space by the caller (ReaderWindow knows about zoom and two-page
+        offsets that this widget doesn't need to)."""
+        self._saved_highlights = highlights
+        self.update()
+
+    def highlight_at_point(self, pos):
+        """The saved highlight (as passed to set_saved_highlights) whose
+        rects contain `pos`, or None. Used to route a right-click either
+        to the "made a new selection" menu or the "clicked an existing
+        highlight" menu."""
+        for h in self._saved_highlights:
+            for r in h["rects"]:
+                if r.contains(pos):
+                    return h
+        return None
 
     def clear(self):
         self._drag_start = None
@@ -103,19 +251,157 @@ class TextSelectionOverlay(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setBrush(QColor(60, 120, 255, 90))
         painter.setPen(Qt.NoPen)
+        # Saved highlights draw first (underneath), each in its own
+        # stored color, at a marker-pen-like alpha so the text beneath
+        # stays readable.
+        for h in self._saved_highlights:
+            color = QColor(h["color"])
+            color.setAlpha(110)
+            painter.setBrush(color)
+            for r in h["rects"]:
+                painter.drawRect(r)
+        # The in-progress/just-finished selection draws on top, so it's
+        # never visually lost underneath a saved highlight it overlaps.
+        painter.setBrush(self._live_color)
         for r in self._highlight_rects:
             painter.drawRect(r)
         painter.end()
 
 
+class SelectionPopup(QWidget):
+    """A small floating toolbar that appears next to a just-finished text
+    selection -- offering Copy and Search in Book right there, instead of
+    only via the right-click menu or Ctrl+C. A plain child widget of the
+    ReaderWindow itself (not a separate top-level popup), positioned with
+    an explicit move() and shown/hidden explicitly, rather than relying
+    on a native popup window's own focus/dismiss behavior -- simpler and
+    more predictable than fighting Qt.Popup's auto-grab quirks."""
+
+    def __init__(self, reader, parent=None):
+        super().__init__(parent)
+        self.reader = reader
+        self.setAutoFillBackground(True)
+        self.setStyleSheet(
+            "SelectionPopup { background: palette(window); border: 1px solid palette(mid); "
+            "border-radius: 4px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 3, 4, 3)
+        layout.setSpacing(4)
+        copy_btn = QPushButton("Copy")
+        copy_btn.setFlat(True)
+        copy_btn.clicked.connect(self._copy)
+        layout.addWidget(copy_btn)
+        search_btn = QPushButton("Search in Book")
+        search_btn.setFlat(True)
+        search_btn.clicked.connect(self._search)
+        layout.addWidget(search_btn)
+        save_btn = QPushButton("Save Highlight")
+        save_btn.setFlat(True)
+        save_btn.clicked.connect(self._save_highlight)
+        layout.addWidget(save_btn)
+        self.hide()
+
+    def _copy(self):
+        self.reader.copy_selection()
+        self.hide()
+
+    def _search(self):
+        self.reader.search_selection_in_book()
+        self.hide()
+
+    def _save_highlight(self):
+        self.reader.save_selection_as_highlight()
+        self.hide()
+
+    def show_near(self, local_pos):
+        self.adjustSize()
+        self.move(int(local_pos.x()), int(local_pos.y()) + 14)
+        self.show()
+        self.raise_()
+
+
+class HighlightDialog(QDialog):
+    """Prompts for a highlight's name and color -- used both when saving a
+    brand new highlight and when editing an existing one. The color swatch
+    always starts on whatever color was already chosen (the current
+    default when saving new, or the highlight's own color when editing),
+    and "Choose Color..." opens the full picker (basic swatches, a
+    spectrum/wheel, and exact RGB/HSV/hex entry) to change it -- letting
+    someone highlight different passages in different colors of their own
+    choosing, one save at a time. When editing an existing highlight,
+    text_preview shows what was actually highlighted, read-only, so it's
+    easy to tell highlights apart without having to jump to the page."""
+
+    def __init__(self, title, initial_name, initial_color, text_preview=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self._color = QColor(initial_color)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name_edit = QLineEdit(initial_name or "")
+        self.name_edit.setPlaceholderText("Leave blank to use the page number")
+        form.addRow("Name", self.name_edit)
+
+        color_row = QHBoxLayout()
+        self.color_swatch = QLabel()
+        self.color_swatch.setFixedSize(22, 22)
+        self._update_swatch()
+        color_row.addWidget(self.color_swatch)
+        choose_btn = QPushButton("Choose Color...")
+        choose_btn.clicked.connect(self._choose_color)
+        color_row.addWidget(choose_btn)
+        color_row.addStretch()
+        form.addRow("Color", color_row)
+        layout.addLayout(form)
+
+        if text_preview is not None:
+            preview_label = QLabel("Highlighted text:")
+            layout.addWidget(preview_label)
+            preview = QTextBrowser()
+            preview.setPlainText(text_preview or "(no text captured)")
+            preview.setReadOnly(True)
+            preview.setMaximumHeight(110)
+            layout.addWidget(preview)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        save_btn = QPushButton("Save")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self.accept)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+    def _update_swatch(self):
+        self.color_swatch.setStyleSheet(
+            f"background-color: {self._color.name()}; border: 1px solid palette(mid);"
+        )
+
+    def _choose_color(self):
+        color = QColorDialog.getColor(self._color, self, "Choose Highlight Color")
+        if color.isValid():
+            self._color = color
+            self._update_swatch()
+
+    def result_values(self):
+        """(name, QColor) -- call only after exec() returns QDialog.Accepted."""
+        return self.name_edit.text().strip(), self._color
+
+
 class ReaderWindow(QMainWindow):
-    def __init__(self, db: Database, book_id: int, on_close=None, password=None):
+    def __init__(self, db: Database, book_id: int, on_close=None, password=None, open_book_at_page=None):
         super().__init__()
         self.db = db
         self.book_id = book_id
         self.on_close = on_close
+        self.open_book_at_page = open_book_at_page  # callback(book_id, page_number) -- lets a
+        # search result for a DIFFERENT book (searching is library-wide) actually open it;
+        # this window has no way to do that itself, since it only ever owns one book
 
         db.mark_as_reading_if_new(book_id)  # first open promotes 'unread' -> 'reading'
         self.book = db.get_book(book_id)
@@ -161,14 +447,20 @@ class ReaderWindow(QMainWindow):
 
         self.select_text_mode = False
         self.selected_text = ""
-        self._words_cache = {}  # page_index -> get_text("words") result, built lazily
+        self._chars_cache = {}  # page_index -> chars_from_rawdict() result, built lazily
         self._left_page_px_width = 0  # set on every two-page render; used to map clicks to the right page
         self._pending_overlay_size = (0, 0)
+        self._last_selection_pos = None  # overlay-local point to anchor the selection popup near
+        self._search_dialog = None
+        self._last_selection_page_ranges = []
+        self._last_selection_chars_by_page = {}
+        self.highlight_color = db.get_setting("highlight_color", DEFAULT_HIGHLIGHT_COLOR)
 
         self._build_ui()
         self._build_bookmarks_dock()
         self.render_page()
         self.refresh_bookmarks()
+        self.refresh_highlights()
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -235,6 +527,13 @@ class ReaderWindow(QMainWindow):
         self.select_text_btn.clicked.connect(self.toggle_select_text_mode)
         toolbar.addWidget(self.select_text_btn)
 
+        highlight_color_btn = QPushButton("Highlight Color")
+        highlight_color_btn.setToolTip(
+            "Set the default color used for the live selection highlight and for new saved highlights"
+        )
+        highlight_color_btn.clicked.connect(self.choose_default_highlight_color)
+        toolbar.addWidget(highlight_color_btn)
+
         self.copy_feedback_label = QLabel("")
         self.copy_feedback_label.setStyleSheet("color: #888; padding-left: 6px;")
         toolbar.addWidget(self.copy_feedback_label)
@@ -284,8 +583,8 @@ class ReaderWindow(QMainWindow):
         bookmark_action.triggered.connect(self.add_bookmark)
         toolbar.addAction(bookmark_action)
 
-        self.bookmarks_btn = QPushButton("Bookmarks")
-        self.bookmarks_btn.setToolTip("Show or hide the bookmarks panel")
+        self.bookmarks_btn = QPushButton("Bookmarks/Highlights")
+        self.bookmarks_btn.setToolTip("Show or hide the bookmarks and highlights panel")
         self.bookmarks_btn.setCheckable(True)
         self.bookmarks_btn.setChecked(True)  # the panel starts open
         self.bookmarks_btn.clicked.connect(self.toggle_bookmarks_dock)
@@ -305,6 +604,10 @@ class ReaderWindow(QMainWindow):
         self.scroll_area.setWidget(self.page_label)
 
         self.text_overlay = TextSelectionOverlay(self, self.page_label)
+        live_color = QColor(self.highlight_color)
+        live_color.setAlpha(90)
+        self.text_overlay.set_live_color(live_color)
+        self.selection_popup = SelectionPopup(self, self)
 
         self.text_browser = QTextBrowser()
         self.text_browser.setReadOnly(True)
@@ -321,16 +624,33 @@ class ReaderWindow(QMainWindow):
         self.page_label.installEventFilter(self)
 
     def _build_bookmarks_dock(self):
-        dock = QDockWidget("Bookmarks", self)
+        dock = QDockWidget("Bookmarks/Highlights", self)
         dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         holder = QWidget()
         layout = QVBoxLayout(holder)
+
+        # Bookmarks stay on top...
         self.bookmark_list = QListWidget()
         self.bookmark_list.itemDoubleClicked.connect(self.jump_to_bookmark)
         layout.addWidget(self.bookmark_list)
         remove_btn = QPushButton("Remove selected bookmark")
         remove_btn.clicked.connect(self.remove_selected_bookmark)
         layout.addWidget(remove_btn)
+
+        # ...with Highlights right below, in the same scrollable panel, so
+        # both are easy to browse without needing a whole separate dock.
+        highlights_label = QLabel("Highlights")
+        highlights_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(highlights_label)
+        self.highlight_list = QListWidget()
+        self.highlight_list.itemDoubleClicked.connect(self.jump_to_highlight)
+        self.highlight_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.highlight_list.customContextMenuRequested.connect(self._show_highlight_list_menu)
+        layout.addWidget(self.highlight_list)
+        remove_highlight_btn = QPushButton("Remove selected highlight")
+        remove_highlight_btn.clicked.connect(self.remove_selected_highlight)
+        layout.addWidget(remove_highlight_btn)
+
         dock.setWidget(holder)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
@@ -369,6 +689,16 @@ class ReaderWindow(QMainWindow):
         )
         if self.simple_text_mode:
             self.text_overlay.hide()
+        else:
+            # The overlay stays visible whenever there's a rendered page to
+            # show it over -- even outside Select Text mode -- so saved
+            # highlights are always visible while reading normally, not
+            # just while actively selecting. It only INTERCEPTS mouse
+            # input (for making a new selection) while Select Text mode
+            # is on; otherwise clicks pass through to the page underneath
+            # so panning keeps working exactly as before.
+            self.text_overlay.show()
+            self.text_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, not self.select_text_mode)
         # Two-Page View is a rendered-image concept, so it doesn't apply to
         # Simple Text mode's plain extracted text either.
         self.two_page_btn.setEnabled(not self.simple_text_mode)
@@ -488,7 +818,9 @@ class ReaderWindow(QMainWindow):
         # A new page/zoom/spread invalidates any old highlight immediately.
         self.text_overlay.clear()
         self.selected_text = ""
+        self.selection_popup.hide()
         self._pending_overlay_size = (width, height)
+        self._load_saved_highlights_for_current_view()
         # Deferred: page_label is resized to fill the scroll area's viewport
         # (setWidgetResizable(True)) and centers the pixmap within itself
         # (AlignCenter) whenever the page is smaller than the window --  so
@@ -648,20 +980,23 @@ class ReaderWindow(QMainWindow):
     def toggle_select_text_mode(self, checked):
         self.select_text_btn.setChecked(checked)
         self.select_text_mode = checked
-        self.text_overlay.setVisible(checked and not self.simple_text_mode)
+        if not self.simple_text_mode:
+            self.text_overlay.show()  # stays visible either way, to show saved highlights
+            self.text_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, not checked)
         if not checked:
             self.text_overlay.clear()
             self.selected_text = ""
+            self.selection_popup.hide()
             self._update_pan_cursor()
 
-    def _get_page_words(self, page_index):
-        """get_text("words") is a real (if fast) PDF-parsing call, and this
-        can be invoked many times per second while dragging -- cache each
-        page's word list the first time it's needed rather than
-        re-extracting it on every mouse-move event."""
-        if page_index not in self._words_cache:
-            self._words_cache[page_index] = self.doc[page_index].get_text("words")
-        return self._words_cache[page_index]
+    def _get_page_chars(self, page_index):
+        """get_text("rawdict") is a real (if fast) PDF-parsing call, and
+        this can be invoked many times per second while dragging -- cache
+        each page's character list the first time it's needed rather
+        than re-extracting it on every mouse-move event."""
+        if page_index not in self._chars_cache:
+            self._chars_cache[page_index] = chars_from_rawdict(self.doc[page_index].get_text("rawdict"))
+        return self._chars_cache[page_index]
 
     def _page_and_point_at(self, overlay_pos):
         """Maps a point in the overlay's pixel coordinates (same space as
@@ -710,16 +1045,38 @@ class ReaderWindow(QMainWindow):
             # clear any existing highlight rather than "select" a sliver.
             self.text_overlay.set_highlight_rects([])
             self.selected_text = ""
+            self.selection_popup.hide()
             return
 
         start_page, start_pt = self._page_and_point_at(start_pos)
         end_page, end_pt = self._page_and_point_at(end_pos)
-        words_by_page = {start_page: self._get_page_words(start_page)}
+        chars_by_page = {start_page: self._get_page_chars(start_page)}
         if end_page != start_page:
-            words_by_page[end_page] = self._get_page_words(end_page)
+            chars_by_page[end_page] = self._get_page_chars(end_page)
 
-        page_ranges = resolve_multi_page_selection(words_by_page, start_page, start_pt, end_page, end_pt)
-        self._apply_page_ranges(page_ranges, words_by_page)
+        page_ranges = resolve_multi_page_selection(chars_by_page, start_page, start_pt, end_page, end_pt)
+        self._apply_page_ranges(page_ranges, chars_by_page)
+        self._last_selection_pos = end_pos
+
+    def select_word_or_paragraph_at(self, pos, paragraph):
+        """Double-click (paragraph=False) selects the whole word under
+        pos; triple-click (paragraph=True) selects its whole paragraph,
+        however many lines it wraps to. pos is in overlay pixel
+        coordinates, same as update_text_selection."""
+        if self.doc is None:
+            return
+        page_idx, (x, y) = self._page_and_point_at(pos)
+        chars = self._get_page_chars(page_idx)
+        if not chars:
+            return
+        idx = char_index_at_point(chars, x, y)
+        if idx is None:
+            return
+        bounds = paragraph_bounds_at_index(chars, idx) if paragraph else word_bounds_at_index(chars, idx)
+        if bounds is None:
+            return
+        self._apply_page_ranges([(page_idx, *bounds)], {page_idx: chars})
+        self._last_selection_pos = pos
 
     def select_all_text(self):
         """Selects everything on the current page (or both pages of the
@@ -733,32 +1090,126 @@ class ReaderWindow(QMainWindow):
         else:
             start_page = end_page = self.current_page
 
-        words_by_page = {start_page: self._get_page_words(start_page)}
+        chars_by_page = {start_page: self._get_page_chars(start_page)}
         if end_page != start_page:
-            words_by_page[end_page] = self._get_page_words(end_page)
-        page_ranges = resolve_multi_page_selection(words_by_page, start_page, NEAR_POINT, end_page, FAR_POINT)
-        self._apply_page_ranges(page_ranges, words_by_page)
+            chars_by_page[end_page] = self._get_page_chars(end_page)
+        page_ranges = resolve_multi_page_selection(chars_by_page, start_page, NEAR_POINT, end_page, FAR_POINT)
+        self._apply_page_ranges(page_ranges, chars_by_page)
         if self.selected_text:
             self.copy_feedback_label.setText(f"{len(self.selected_text)} characters selected")
             QTimer.singleShot(2500, lambda: self.copy_feedback_label.setText(""))
 
-    def _apply_page_ranges(self, page_ranges, words_by_page):
-        """Shared by update_text_selection and select_all_text: turns a
-        list of (page_index, start_word, end_word) ranges into the actual
-        selected text and the overlay's highlight rectangles (each scaled
-        by zoom and shifted by that page's x-offset in the combined
-        image, so a right-page rect in Two-Page View lands in the right
-        place)."""
-        self.selected_text = combined_selected_text(words_by_page, page_ranges)
+    def _apply_page_ranges(self, page_ranges, chars_by_page):
+        """Shared by update_text_selection, select_word_or_paragraph_at,
+        and select_all_text: turns a list of (page_index, start_char,
+        end_char) ranges into the actual selected text and the overlay's
+        highlight rectangles (each scaled by zoom and shifted by that
+        page's x-offset in the combined image, so a right-page rect in
+        Two-Page View lands in the right place)."""
+        self.selected_text = combined_selected_text(chars_by_page, page_ranges)
+        self._last_selection_page_ranges = page_ranges  # used by save_selection_as_highlight
+        self._last_selection_chars_by_page = chars_by_page
         highlight_rects = []
         zoom = self._current_render_zoom or 1.0
         for (page_idx, s, e) in page_ranges:
             x_offset = self._page_x_offset_px(page_idx)
-            for (rx0, ry0, rx1, ry1) in selection_rects(words_by_page[page_idx], s, e):
+            for (rx0, ry0, rx1, ry1) in selection_rects(chars_by_page[page_idx], s, e):
                 highlight_rects.append(QRectF(
                     rx0 * zoom + x_offset, ry0 * zoom, (rx1 - rx0) * zoom, (ry1 - ry0) * zoom,
                 ))
         self.text_overlay.set_highlight_rects(highlight_rects)
+
+    # ------------- Saved (persistent) highlights -------------
+    def _load_saved_highlights_for_current_view(self):
+        """Loads every saved highlight for whichever page(s) are currently
+        visible, converts each one's stored PDF-point rects to this
+        render's pixel space, and hands them to the overlay to draw.
+        Called on every render (new page, zoom change, or spread), so a
+        saved highlight always shows up correctly regardless of zoom
+        level or which page it happens to fall on in Two-Page View."""
+        if self.doc is None:
+            return
+        zoom = self._current_render_zoom or 1.0
+        pages = [self.current_page]
+        if self.two_page_mode:
+            left_idx = self._pair_start(self.current_page)
+            right_idx = left_idx + 1
+            pages = [left_idx] + ([right_idx] if right_idx < self.page_count else [])
+
+        overlay_highlights = []
+        for page_idx in pages:
+            x_offset = self._page_x_offset_px(page_idx)
+            for h in self.db.get_highlights_for_page(self.book_id, page_idx):
+                rects = [
+                    QRectF(x0 * zoom + x_offset, y0 * zoom, (x1 - x0) * zoom, (y1 - y0) * zoom)
+                    for (x0, y0, x1, y1) in h["rects"]
+                ]
+                overlay_highlights.append({"id": h["id"], "color": QColor(h["color"]), "rects": rects})
+        self.text_overlay.set_saved_highlights(overlay_highlights)
+
+    def save_selection_as_highlight(self):
+        if not self.selected_text or not self._last_selection_page_ranges:
+            return
+        dialog = HighlightDialog("Save Highlight", "", self.highlight_color, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        custom_name, color = dialog.result_values()
+        chars_by_page = self._last_selection_chars_by_page
+        for (page_idx, s, e) in self._last_selection_page_ranges:
+            chars = chars_by_page.get(page_idx)
+            if not chars:
+                continue
+            rects = selection_rects(chars, s, e)
+            text = selected_text_for_range(chars, s, e)
+            label = custom_name or self._default_highlight_label(page_idx)
+            self.db.add_highlight(self.book_id, page_idx, color.name(), rects, text=text, label=label)
+        self.selected_text = ""
+        self.text_overlay.set_highlight_rects([])
+        self.selection_popup.hide()
+        self._load_saved_highlights_for_current_view()
+        self.refresh_highlights()
+
+    def _default_highlight_label(self, page_idx):
+        """"Page N" for the first highlight on a page when the user
+        doesn't type a name of their own; "Page N - 1", "Page N - 2", etc.
+        for subsequent ones on that same page, so they stay distinguishable
+        in the sidebar list."""
+        existing_count = len(self.db.get_highlights_for_page(self.book_id, page_idx))
+        if existing_count == 0:
+            return f"Page {page_idx + 1}"
+        return f"Page {page_idx + 1} - {existing_count}"
+
+    def delete_highlight(self, highlight_id):
+        self.db.delete_highlight(highlight_id)
+        self._load_saved_highlights_for_current_view()
+        self.refresh_highlights()
+
+    def edit_highlight(self, highlight_id):
+        highlight = next((h for h in self.db.get_highlights(self.book_id) if h["id"] == highlight_id), None)
+        if highlight is None:
+            return
+        dialog = HighlightDialog(
+            "Edit Highlight", highlight["label"], highlight["color"],
+            text_preview=highlight["text"], parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name, color = dialog.result_values()
+        label = name or f"Page {highlight['page_number'] + 1}"
+        self.db.update_highlight_label(highlight_id, label)
+        self.db.update_highlight_color(highlight_id, color.name())
+        self._load_saved_highlights_for_current_view()
+        self.refresh_highlights()
+
+    def choose_default_highlight_color(self):
+        color = QColorDialog.getColor(QColor(self.highlight_color), self, "Default Highlight Color")
+        if not color.isValid():
+            return
+        self.highlight_color = color.name()
+        self.db.set_setting("highlight_color", self.highlight_color)
+        live_color = QColor(self.highlight_color)
+        live_color.setAlpha(90)
+        self.text_overlay.set_live_color(live_color)
 
 
 
@@ -771,6 +1222,37 @@ class ReaderWindow(QMainWindow):
     def _flash_copy_feedback(self, n_chars):
         self.copy_feedback_label.setText(f"Copied {n_chars} character{'s' if n_chars != 1 else ''}")
         QTimer.singleShot(2500, lambda: self.copy_feedback_label.setText(""))
+
+    def show_selection_popup(self):
+        if not self.selected_text or self._last_selection_pos is None:
+            self.selection_popup.hide()
+            return
+        global_pt = self.text_overlay.mapToGlobal(self._last_selection_pos.toPoint())
+        local_pt = self.mapFromGlobal(global_pt)
+        self.selection_popup.show_near(local_pt)
+
+    def search_selection_in_book(self):
+        if not self.selected_text:
+            return
+        query = " ".join(self.selected_text.split())  # collapse newlines/extra whitespace to one line
+        if self._search_dialog is None:
+            self._search_dialog = TextSearchDialog(self.db, self._handle_search_result, self)
+        self._search_dialog.query_edit.setText(query)
+        self._search_dialog.start_search()
+        self._search_dialog.show()
+        self._search_dialog.raise_()
+        self._search_dialog.activateWindow()
+
+    def _handle_search_result(self, book_id, page_number):
+        if book_id == self.book_id:
+            self.jump_to_page(page_number + 1)
+            self.raise_()
+            self.activateWindow()
+        elif self.open_book_at_page:
+            # A result in a DIFFERENT book -- this window only ever owns
+            # the one book, so hand off to the library window's own
+            # open-any-book logic (threaded through at construction time).
+            self.open_book_at_page(book_id, page_number)
 
     def prev_page(self):
         if self.two_page_mode:
@@ -918,6 +1400,48 @@ class ReaderWindow(QMainWindow):
             return
         self.db.delete_bookmark(item.data(Qt.UserRole))
         self.refresh_bookmarks()
+
+    def refresh_highlights(self):
+        self.highlight_list.clear()
+        for h in self.db.get_highlights(self.book_id):
+            text = h["label"] or f"Page {h['page_number'] + 1}"
+            snippet = (h["text"] or "").strip().replace("\n", " ")
+            if snippet:
+                text += f" \u2014 {snippet[:40]}{'...' if len(snippet) > 40 else ''}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.UserRole, h["id"])
+            item.setData(Qt.UserRole + 1, h["page_number"])
+            item.setForeground(QColor(h["color"]))
+            self.highlight_list.addItem(item)
+
+    def jump_to_highlight(self, item):
+        self.current_page = item.data(Qt.UserRole + 1)
+        self.render_page()
+
+    def _show_highlight_list_menu(self, pos):
+        item = self.highlight_list.itemAt(pos)
+        if item is None:
+            return
+        highlight_id = item.data(Qt.UserRole)
+        menu = QMenu(self)
+        jump_action = menu.addAction("Jump to Page")
+        edit_action = menu.addAction("Edit Highlight...")
+        delete_action = menu.addAction("Delete Highlight")
+        chosen = menu.exec(self.highlight_list.mapToGlobal(pos))
+        if chosen is jump_action:
+            self.jump_to_highlight(item)
+        elif chosen is edit_action:
+            self.edit_highlight(highlight_id)
+        elif chosen is delete_action:
+            self.delete_highlight(highlight_id)
+
+    def remove_selected_highlight(self):
+        item = self.highlight_list.currentItem()
+        if not item:
+            return
+        self.db.delete_highlight(item.data(Qt.UserRole))
+        self.refresh_highlights()
+        self._load_saved_highlights_for_current_view()
 
     # ------------- Lifecycle -------------
     def showEvent(self, event):

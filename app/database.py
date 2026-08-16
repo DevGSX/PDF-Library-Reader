@@ -1,4 +1,5 @@
 """SQLite-backed storage for the PDF library: books, bookmarks and app settings."""
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -44,6 +45,17 @@ class Database:
                 book_id INTEGER NOT NULL,
                 page_number INTEGER NOT NULL,
                 label TEXT,
+                created_date TEXT NOT NULL,
+                FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS highlights (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id INTEGER NOT NULL,
+                page_number INTEGER NOT NULL,
+                label TEXT,
+                color TEXT NOT NULL,
+                text TEXT,
+                rects TEXT NOT NULL,
                 created_date TEXT NOT NULL,
                 FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
             );
@@ -464,6 +476,52 @@ class Database:
 
     def delete_bookmark(self, bookmark_id):
         self.conn.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+        self.conn.commit()
+
+    # ---------------- Highlights ----------------
+    def add_highlight(self, book_id, page_number, color, rects, text="", label=""):
+        """rects: a JSON-serializable list of [x0, y0, x1, y1] in the
+        page's own PDF-point coordinate space (zoom-independent, so a
+        saved highlight redraws correctly at any zoom level later)."""
+        now = datetime.now().isoformat()
+        cur = self.conn.execute(
+            "INSERT INTO highlights (book_id, page_number, label, color, text, rects, created_date) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (book_id, page_number, label, color, text, json.dumps(rects), now),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def get_highlights(self, book_id):
+        cur = self.conn.execute(
+            "SELECT * FROM highlights WHERE book_id = ? ORDER BY page_number ASC, id ASC",
+            (book_id,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            r["rects"] = json.loads(r["rects"])
+        return rows
+
+    def get_highlights_for_page(self, book_id, page_number):
+        cur = self.conn.execute(
+            "SELECT * FROM highlights WHERE book_id = ? AND page_number = ? ORDER BY id ASC",
+            (book_id, page_number),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            r["rects"] = json.loads(r["rects"])
+        return rows
+
+    def update_highlight_color(self, highlight_id, color):
+        self.conn.execute("UPDATE highlights SET color = ? WHERE id = ?", (color, highlight_id))
+        self.conn.commit()
+
+    def update_highlight_label(self, highlight_id, label):
+        self.conn.execute("UPDATE highlights SET label = ? WHERE id = ?", (label, highlight_id))
+        self.conn.commit()
+
+    def delete_highlight(self, highlight_id):
+        self.conn.execute("DELETE FROM highlights WHERE id = ?", (highlight_id,))
         self.conn.commit()
 
     # ---------------- Settings ----------------

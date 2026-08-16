@@ -215,7 +215,8 @@ and a distraction-free "simple text" reading mode.
   a book, jump back to it later, remove it when you're done. The panel has
   its own "Bookmarks" toggle button next to "+ Bookmark" in the toolbar, so
   if you close the panel with its own [x] button, that same toggle brings it
-  right back.
+  right back. **Highlights** (see below) live in the same panel, right below
+  your bookmarks, so both are easy to browse together.
 - **Text size** — A+ / A- controls zoom in normal view and font size in
   simple text mode. Your last setting is remembered.
 - **Click-and-drag panning** — when you've zoomed in past what fits the
@@ -245,16 +246,37 @@ and a distraction-free "simple text" reading mode.
   text-heavy books, bad for pages that are mostly images/diagrams. Its text
   can be selected and copied directly, like any normal text view.
 - **Select Text** — click "Select Text" in the reader toolbar, then drag over
-  the rendered page like you would in Adobe Acrobat or any other PDF viewer:
-  the highlight follows real reading order rather than a blocky rectangle, so
-  dragging from partway through one line to partway through a line several
-  lines down correctly grabs every full line in between, not just whatever
-  happens to fall inside the drag box. Works the same way across a Two-Page
-  View spread, including a drag that starts on one page and ends on the
-  other. Ctrl+C or right-click → Copy copies the selection; right-click →
-  Select All grabs the whole page (or both pages of a spread). Not available
-  in Simple Text mode, since that view's plain text can already be selected
-  and copied directly.
+  the rendered page like you would in Adobe Acrobat or any other PDF viewer.
+  Selection is character-level, so it can start or end mid-word, not just
+  snap to a whole word at a time — and it follows real reading order rather
+  than a blocky rectangle, so dragging from partway through one line to
+  partway through a line several lines down correctly grabs every full line
+  in between, not just whatever happens to fall inside the drag box. Works
+  the same way across a Two-Page View spread, including a drag that starts
+  on one page and ends on the other. A hyphen at the end of a wrapped line
+  is detected and removed from copied text so words rejoin correctly
+  ("tele-" / "photo" → "telephoto"), while a genuine hyphenated word that
+  happens to also end a line is left alone. Double-click selects a word,
+  triple-click selects the whole paragraph. Dragging near the top/bottom
+  edge of the window auto-scrolls so you can extend a selection past what's
+  currently visible. A small popup appears next to a finished selection
+  with **Copy** and **Search in Book** right there; the same options (plus
+  **Select All** and **Save Highlight...**) are on the right-click menu, and
+  Ctrl+C / Ctrl+A work too. Not available in Simple Text mode, since that
+  view's plain text can already be selected and copied directly.
+- **Highlights** — right-click a selection and choose **Save Highlight...**
+  to pick a color and keep it permanently on the page, like a real
+  highlighter pen. Saved highlights show up whenever you're reading that
+  page, whether or not Select Text mode is on, and scale correctly with
+  zoom. Right-click an existing highlight for **Delete** or **Change
+  Color...** — colors come from a full picker (basic swatches, a spectrum,
+  or exact RGB/HSV/hex values). The "Highlight Color" toolbar button sets
+  the default color used for both the live selection and new highlights.
+  Every highlight also appears in the Highlights section of the bookmarks
+  panel, named "Page N" by default, so you can jump straight to it later.
+  Highlights are included in **Full Export** and **Selected Books Export**
+  (the variants that carry your reading data) and left out of the **Share**
+  variants, same as your reading status and favorites.
 - **Two-Page View** — shows two pages side by side like a book spread,
   handy on a wide screen. Prev/Next, jumping to a specific page, and
   scrolling past the edge all move by the full spread rather than one page

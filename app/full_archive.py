@@ -1,8 +1,8 @@
 """Full backup archive: a ZIP containing the actual PDF files plus a
 manifest of everything that isn't already encoded in their filenames --
-categories, bookmarks, reading status, favorite, annotation, and reading
-progress. The natural way to move (or back up) an entire library, not just
-its categorization.
+categories, bookmarks, reading status, favorite, annotation, reading
+progress, and saved highlights. The natural way to move (or back up) an
+entire library, not just its categorization.
 """
 import json
 import os
@@ -20,15 +20,17 @@ def build_manifest(db, book_ids=None, include_reading_state=True):
     """Returns (manifest_dict, {filename: source_filepath}).
 
     include_reading_state controls whether each book's personal reading
-    data -- status, favorite flag, and last-read page -- is included.
-    That data makes sense for a backup of your own library (restoring it
-    to yourself elsewhere should put you back where you left off), but
-    imposing it on someone you're sharing books with doesn't: they'd end
-    up with books mysteriously pre-marked "Finished" or already favorited,
-    or resuming mid-book at a page they never reached. Pass False for a
+    data -- status, favorite flag, last-read page, and saved highlights --
+    is included. That data makes sense for a backup of your own library
+    (restoring it to yourself elsewhere should put you back where you
+    left off), but imposing it on someone you're sharing books with
+    doesn't: they'd end up with books mysteriously pre-marked "Finished"
+    or already favorited, resuming mid-book at a page they never reached,
+    or covered in highlights they never made. Pass False for a
     share-oriented export -- the importing side already treats a missing
-    status/is_favorite/last_page as "leave it alone", so simply omitting
-    them here is enough; no changes needed on the import path.
+    status/is_favorite/last_page/highlights as "leave it alone", so
+    simply omitting them here is enough; no changes needed on the import
+    path.
     """
     if book_ids is None:
         book_ids = [b["id"] for b in db.get_books()]
@@ -54,6 +56,13 @@ def build_manifest(db, book_ids=None, include_reading_state=True):
             entry["status"] = book["status"] or "unread"
             entry["is_favorite"] = bool(book["is_favorite"])
             entry["last_page"] = book["last_page"] or 0
+            entry["highlights"] = [
+                {
+                    "page_number": h["page_number"], "color": h["color"],
+                    "label": h["label"] or "", "text": h["text"] or "", "rects": h["rects"],
+                }
+                for h in db.get_highlights(book_id)
+            ]
         books_out[filename] = entry
         for c in cats:
             categories_seen[c["name"]] = bool(c["is_favorite"])
@@ -134,6 +143,7 @@ def apply_archive(db, zip_path, destination_dir):
             name_to_cat_id[name] = cat["id"]
 
         matched, added, skipped, bookmarks_added = 0, 0, 0, 0
+        highlights_added = 0
         for filename, meta in books.items():
             book = db.get_book_by_filename(filename)
             if book is None:
@@ -186,7 +196,22 @@ def apply_archive(db, zip_path, destination_dir):
             if meta.get("last_page"):
                 db.update_progress(book["id"], meta["last_page"])
 
+            existing_highlights = {
+                (h["page_number"], h["color"], json.dumps(h["rects"]))
+                for h in db.get_highlights(book["id"])
+            }
+            for h in meta.get("highlights", []):
+                key = (h["page_number"], h["color"], json.dumps(h["rects"]))
+                if key in existing_highlights:
+                    continue
+                db.add_highlight(
+                    book["id"], h["page_number"], h["color"], h["rects"],
+                    text=h.get("text") or "", label=h.get("label") or "",
+                )
+                highlights_added += 1
+
     return {
         "matched": matched, "added": added, "skipped": skipped,
         "categories_created": categories_created, "bookmarks_added": bookmarks_added,
+        "highlights_added": highlights_added,
     }

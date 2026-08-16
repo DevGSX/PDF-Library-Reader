@@ -1033,14 +1033,17 @@ class LibraryWindow(QMainWindow):
         self.refresh_categories_sidebar()
         self.refresh_list()
         n_created = summary["categories_created"]
-        QMessageBox.information(
-            self, "Import complete",
+        n_highlights = summary.get("highlights_added", 0)
+        msg = (
             f"Added {summary['added']} new book(s) to your library.\n"
             f"Matched {summary['matched']} book(s) total (new + already present).\n"
             f"Skipped {summary['skipped']} book(s) missing from the archive.\n"
             f"Added {summary['bookmarks_added']} new bookmark(s), "
-            f"created {n_created} new categor{'y' if n_created == 1 else 'ies'}.",
+            f"created {n_created} new categor{'y' if n_created == 1 else 'ies'}."
         )
+        if n_highlights:
+            msg += f"\nAdded {n_highlights} new highlight(s)."
+        QMessageBox.information(self, "Import complete", msg)
 
     # ------------- Multi-select & bulk actions -------------
     def toggle_book_selection(self, book_id):
@@ -2162,6 +2165,9 @@ class LibraryWindow(QMainWindow):
 
             password = entered
 
-        win = ReaderWindow(self.db, book_id, on_close=self.refresh_list, password=password)
+        win = ReaderWindow(
+            self.db, book_id, on_close=self.refresh_list, password=password,
+            open_book_at_page=self.open_book_at_page,
+        )
         self.reader_windows[book_id] = win
         win.show()
