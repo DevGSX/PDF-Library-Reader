@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from .file_naming import sync_filename
 from .multi_select_combo import MultiSelectComboBox
-from .presets import GENRE_PRESETS, LANGUAGE_PRESETS
+from .presets import GENRE_PRESETS, LANGUAGE_PRESETS, merge_with_used, normalize_custom_value
 from .thumbnails import ensure_thumbnail
 from .widgets import human_size
 
@@ -46,6 +46,13 @@ class BookDetailsDialog(QDialog):
         super().__init__(parent)
         self.db = db
         self.book_id = None
+        # Populated with the full option list (presets + everything in
+        # actual use across the library) each time load_book() runs -- see
+        # _refresh_genre_language_options(). Defaulted here just so
+        # _current_genre()/_current_language() have something sane if ever
+        # called before the first load_book().
+        self._all_genres = list(GENRE_PRESETS)
+        self._all_languages = list(LANGUAGE_PRESETS)
         self.setWindowTitle("Book Details")
         self.resize(440, 660)
         self._build_ui()
@@ -158,6 +165,22 @@ class BookDetailsDialog(QDialog):
     def _on_language_custom_toggled(self, checked):
         self.language_custom_edit.setVisible(checked)
 
+    def _refresh_genre_language_options(self):
+        """Rebuild the Genre/Language dropdown items from the preset lists
+        plus every value actually in use across the library right now --
+        a custom genre/language typed on some other book, or one an
+        imported filename already encoded -- so it shows up as a normal,
+        checkable option here too instead of only ever living in the
+        Custom field. Runs every time a book is loaded so a value added
+        anywhere shows up immediately, without needing to reopen the app."""
+        self._all_genres = merge_with_used(GENRE_PRESETS, self.db.get_distinct_genres())
+        self.genre_combo.clear_items()
+        self.genre_combo.add_items(self._all_genres)
+
+        self._all_languages = merge_with_used(LANGUAGE_PRESETS, self.db.get_distinct_languages())
+        self.language_combo.clear_items()
+        self.language_combo.add_items(self._all_languages)
+
     def load_book(self, book_id):
         self.book_id = book_id
         book = self.db.get_book(book_id)
@@ -185,14 +208,16 @@ class BookDetailsDialog(QDialog):
         self.series_edit.setText(book["series"] or "")
         self.annotation_edit.setPlainText(book["annotation"] or "")
 
+        self._refresh_genre_language_options()
+
         self._load_multi_value(
-            book["genre"] or "", GENRE_PRESETS,
+            book["genre"] or "", self._all_genres,
             self.genre_combo, self.genre_custom_check, self.genre_custom_edit,
         )
         self._on_genre_custom_toggled(self.genre_custom_check.isChecked())
 
         self._load_multi_value(
-            book["language"] or "", LANGUAGE_PRESETS,
+            book["language"] or "", self._all_languages,
             self.language_combo, self.language_custom_check, self.language_custom_edit,
         )
         self._on_language_custom_toggled(self.language_custom_check.isChecked())
@@ -206,13 +231,17 @@ class BookDetailsDialog(QDialog):
 
     @staticmethod
     def _load_multi_value(raw_value, presets, combo, custom_check, custom_edit):
-        """Split a '_'-joined value: preset tokens get checked in the
-        dropdown, anything else goes into the Custom field (joined back with
-        '_' if there's more than one non-preset value)."""
+        """Split a '_'-joined value: a token matching a known value (case-
+        insensitively, since older data may predate normalization) gets
+        checked in the dropdown using that value's actual casing; anything
+        else goes into the Custom field (joined back with '_' if there's
+        more than one genuinely-unrecognized value)."""
         tokens = [t.strip() for t in raw_value.split("_") if t.strip()]
-        preset_set = set(presets)
-        preset_tokens = [t for t in tokens if t in preset_set]
-        custom_tokens = [t for t in tokens if t not in preset_set]
+        known_lower = {p.lower(): p for p in presets}
+        preset_tokens, custom_tokens = [], []
+        for t in tokens:
+            canonical = known_lower.get(t.lower())
+            (preset_tokens if canonical else custom_tokens).append(canonical or t)
         combo.set_checked_items(preset_tokens)
         if custom_tokens:
             custom_check.setChecked(True)
@@ -230,26 +259,46 @@ class BookDetailsDialog(QDialog):
         self.favorite_btn.setText("\u2605 Favorited" if book["is_favorite"] else "\u2606 Favorite")
 
     @staticmethod
-    def _combine_multi_value(combo, custom_check, custom_edit):
+    def _combine_multi_value(combo, custom_check, custom_edit, known_values):
         parts = list(combo.checked_items())
         if custom_check.isChecked():
             custom = custom_edit.text().strip()
             if custom:
-                parts.extend(p.strip() for p in custom.split("_") if p.strip())
-        # de-duplicate while preserving order
+                parts.extend(
+                    normalize_custom_value(p.strip(), known_values)
+                    for p in custom.split("_") if p.strip()
+                )
+        # de-duplicate case-insensitively while preserving order
         seen = set()
         ordered = []
         for p in parts:
-            if p not in seen:
-                seen.add(p)
+            key = p.lower()
+            if key not in seen:
+                seen.add(key)
                 ordered.append(p)
         return "_".join(ordered)
 
     def _current_genre(self):
-        return self._combine_multi_value(self.genre_combo, self.genre_custom_check, self.genre_custom_edit)
+        return self._combine_multi_value(
+            self.genre_combo, self.genre_custom_check, self.genre_custom_edit, self._all_genres
+        )
 
     def _current_language(self):
-        return self._combine_multi_value(self.language_combo, self.language_custom_check, self.language_custom_edit)
+        return self._combine_multi_value(
+            self.language_combo, self.language_custom_check, self.language_custom_edit,
+            self._all_languages,
+        )
+
+    def _current_series(self):
+        """Series has no preset list -- it's freeform -- so normalization
+        here only ever reuses an existing series' own casing (typing "dune
+        saga" when "Dune Saga" is already used elsewhere becomes "Dune
+        Saga"); a genuinely new series still just gets light title-casing,
+        same as a new custom Genre/Language."""
+        existing = merge_with_used(
+            [], (b["series"] for b in self.db.get_books() if b.get("series"))
+        )
+        return normalize_custom_value(self.series_edit.text().strip(), existing)
 
     def _save(self):
         if self.book_id is None:
@@ -259,7 +308,7 @@ class BookDetailsDialog(QDialog):
                 self.book_id,
                 title=self.title_edit.text().strip() or "Untitled",
                 author=self.author_edit.text().strip(),
-                series=self.series_edit.text().strip(),
+                series=self._current_series(),
                 genre=self._current_genre(),
                 language=self._current_language(),
                 annotation=self.annotation_edit.toPlainText().strip(),

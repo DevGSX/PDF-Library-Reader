@@ -24,17 +24,22 @@ def _sanitize(text):
 
 
 def build_filename(title, author, series, genre, language, ext):
-    """'Title - Author - Series - Genre - Language.pdf' -- empty parts are
-    dropped, e.g. a book with nothing but a title just becomes 'Title.pdf'.
-    A book with more than one genre or language renders as such directly,
-    e.g. "English_Bulgarian" or "Science Fiction_Fantasy"."""
-    parts = [
-        p for p in (
-            _sanitize(title), _sanitize(author), _sanitize(series),
-            _sanitize(genre), _sanitize(language),
-        ) if p
+    """'Title - Author - Series - Genre - Language.pdf'. Each field keeps
+    its own fixed position -- a field left blank shows up as an empty gap
+    between two dashes (e.g. "Title -  - Series -  - English.pdf") rather
+    than being skipped, so parse_filename() can always tell which field is
+    which no matter which ones are filled in. Trailing blank fields are
+    trimmed instead of leaving dangling dashes, so a book with nothing but
+    a title still just becomes 'Title.pdf'. A book with more than one
+    genre or language renders as such directly, e.g. "English_Bulgarian"
+    or "Science Fiction_Fantasy"."""
+    fields = [
+        _sanitize(title), _sanitize(author), _sanitize(series),
+        _sanitize(genre), _sanitize(language),
     ]
-    name = " - ".join(parts) if parts else "Untitled"
+    while len(fields) > 1 and not fields[-1]:
+        fields.pop()
+    name = " - ".join(fields) if any(fields) else "Untitled"
     if len(name) > MAX_NAME_LENGTH:
         name = name[:MAX_NAME_LENGTH].rstrip()
     return f"{name}{ext}"
@@ -42,26 +47,29 @@ def build_filename(title, author, series, genre, language, ext):
 
 def parse_filename(filename):
     """Inverse of build_filename(): given a filename (with or without its
-    extension) split on ' - ' into title/author/series/genre/language. Title
-    always ends up populated (falling back to the whole filename, or
-    'Untitled' if even that is empty); the rest default to '' when not
-    present. Extra segments beyond five are ignored.
+    extension) split on ' - ' into title/author/series/genre/language, by
+    fixed position -- an empty segment between two dashes (e.g.
+    "A -  - C") means that field was blank, not skipped, so later fields
+    never shift out of their slot. Title always ends up populated (falling
+    back to the whole filename, or 'Untitled' if even that is empty); the
+    rest default to '' when not present. Extra segments beyond five are
+    ignored.
 
-    This only round-trips exactly for filenames this app generated -- if a
-    field was left blank when the file was named, later fields shift up by
-    one slot, since a plain 'A - B - C' has no way to record *which* field
-    was skipped. Title itself is never ambiguous: it's always the first
-    segment when present, since the app never lets Title be saved blank.
+    This only round-trips exactly for filenames this app generated. A
+    filename dropped in from outside that happens to contain ' - ' will
+    still be split positionally the same way -- there's no way to tell
+    those apart from a genuine blank gap.
     """
-    name = os.path.splitext(filename)[0]
-    parts = [p.strip() for p in name.split(" - ")]
-    parts = [p for p in parts if p]
-    if not parts:
+    name = os.path.splitext(filename)[0].strip()
+    if not name:
         return {"title": "Untitled", "author": "", "series": "", "genre": "", "language": ""}
+    parts = [p.strip() for p in name.split(" - ")]
     keys = ["title", "author", "series", "genre", "language"]
     result = {k: "" for k in keys}
     for key, value in zip(keys, parts):
         result[key] = value
+    if not result["title"]:
+        result["title"] = name
     return result
 
 

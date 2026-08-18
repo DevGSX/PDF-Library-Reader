@@ -51,7 +51,7 @@ from .full_archive import read_manifest as read_archive_manifest
 from .full_archive import write_archive
 from .multi_select_combo import ClickToOpenComboBox, MultiSelectComboBox
 from .pdf_password import PasswordUnlockDialog, strip_or_change_password
-from .presets import GENRE_PRESETS, LANGUAGE_PRESETS
+from .presets import GENRE_PRESETS, LANGUAGE_PRESETS, merge_with_used, normalize_custom_value
 from .reader_window import ReaderWindow
 from .search_dialog import TextSearchDialog
 from .themes import DARK_THEME, LIGHT_THEME
@@ -506,25 +506,33 @@ class LibraryWindow(QMainWindow):
         item stays selectable regardless of current match count -- disabling
         an item you've already checked would leave you unable to uncheck it
         again once its filtered result count drops to zero."""
-        used_genres = set(self.db.get_distinct_genres())
-        all_genres = list(GENRE_PRESETS) + sorted(
-            (g for g in used_genres if g not in GENRE_PRESETS), key=str.lower
-        )
+        all_genres = self._current_genre_options()
         self.genre_filter_combo.blockSignals(True)
         self.genre_filter_combo.clear_items()
         self.genre_filter_combo.add_items(all_genres)
         self.genre_filter_combo.set_checked_items(self.selected_genres)
         self.genre_filter_combo.blockSignals(False)
 
-        used_languages = set(self.db.get_distinct_languages())
-        all_languages = list(LANGUAGE_PRESETS) + sorted(
-            (l for l in used_languages if l not in LANGUAGE_PRESETS), key=str.lower
-        )
+        all_languages = self._current_language_options()
         self.language_filter_combo.blockSignals(True)
         self.language_filter_combo.clear_items()
         self.language_filter_combo.add_items(all_languages)
         self.language_filter_combo.set_checked_items(self.selected_languages)
         self.language_filter_combo.blockSignals(False)
+
+    def _current_genre_options(self):
+        """Every genre available to pick from anywhere in the app: the
+        preset list plus any custom genre actually in use on a book right
+        now (typed by hand, or backfilled from a compliant filename on
+        import) -- shared by the filter bar and the Genre "Set..." dialogs
+        so a custom value shows up as a normal option everywhere, not just
+        wherever it was first typed."""
+        return merge_with_used(GENRE_PRESETS, self.db.get_distinct_genres())
+
+    def _current_language_options(self):
+        """Language counterpart to _current_genre_options() above."""
+        return merge_with_used(LANGUAGE_PRESETS, self.db.get_distinct_languages())
+
 
     def _on_genre_filter_changed(self):
         self.selected_genres = set(self.genre_filter_combo.checked_items())
@@ -1230,8 +1238,8 @@ class LibraryWindow(QMainWindow):
 
     # ------------- Quick-set Series / Genre / Language for selected books -------------
     def _set_series_for_books(self, book_ids, clear_selection_after=False):
-        existing = sorted(
-            {b["series"] for b in self.db.get_books() if b.get("series")}, key=str.lower
+        existing = merge_with_used(
+            [], (b["series"] for b in self.db.get_books() if b.get("series"))
         )
         current = ""
         if len(book_ids) == 1:
@@ -1257,7 +1265,7 @@ class LibraryWindow(QMainWindow):
         current = ""
         if len(book_ids) == 1:
             current = (self.db.get_book(book_ids[0]) or {"genre": ""})["genre"] or ""
-        value = self._prompt_multi_value("Set Genre", GENRE_PRESETS, current)
+        value = self._prompt_multi_value("Set Genre", self._current_genre_options(), current)
         if value is None:
             return
         self._apply_bulk_field(book_ids, self.db.bulk_set_genre, value, clear_selection_after)
@@ -1266,16 +1274,18 @@ class LibraryWindow(QMainWindow):
         current = ""
         if len(book_ids) == 1:
             current = (self.db.get_book(book_ids[0]) or {"language": ""})["language"] or ""
-        value = self._prompt_multi_value("Set Language", LANGUAGE_PRESETS, current)
+        value = self._prompt_multi_value("Set Language", self._current_language_options(), current)
         if value is None:
             return
         self._apply_bulk_field(book_ids, self.db.bulk_set_language, value, clear_selection_after)
 
     def _prompt_multi_value(self, title, presets, current_value):
         """Shared dialog for bulk-setting Genre/Language: a checkable
-        multi-select dropdown (check any number of presets) plus a Custom
-        field for one more, freely-typed value -- mirrors the same fields in
-        Book Details. Returns the new '_'-joined value, or None if canceled."""
+        multi-select dropdown (check any number of presets, or previously-
+        used custom values -- see _current_genre_options/_current_language_
+        options) plus a Custom field for one more, freely-typed value --
+        mirrors the same fields in Book Details. Returns the new
+        '_'-joined value, or None if canceled."""
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         layout = QVBoxLayout(dialog)
@@ -1289,9 +1299,16 @@ class LibraryWindow(QMainWindow):
         custom_check.toggled.connect(custom_edit.setVisible)
 
         tokens = [t.strip() for t in (current_value or "").split("_") if t.strip()]
-        preset_set = set(presets)
-        preset_tokens = [t for t in tokens if t in preset_set]
-        custom_tokens = [t for t in tokens if t not in preset_set]
+        # Case-insensitive lookup so a token that only differs from a known
+        # value by capitalization (e.g. leftover dirty data from before
+        # values were normalized) still lands as a checked box using that
+        # value's actual on-screen casing, instead of silently falling
+        # through to the Custom field.
+        known_lower = {p.lower(): p for p in presets}
+        preset_tokens, custom_tokens = [], []
+        for t in tokens:
+            canonical = known_lower.get(t.lower())
+            (preset_tokens if canonical else custom_tokens).append(canonical or t)
         combo.set_checked_items(preset_tokens)
         if custom_tokens:
             custom_check.setChecked(True)
@@ -1311,11 +1328,15 @@ class LibraryWindow(QMainWindow):
         if custom_check.isChecked():
             custom = custom_edit.text().strip()
             if custom:
-                parts.extend(p.strip() for p in custom.split("_") if p.strip())
+                parts.extend(
+                    normalize_custom_value(p.strip(), presets)
+                    for p in custom.split("_") if p.strip()
+                )
         seen, ordered = set(), []
         for p in parts:
-            if p not in seen:
-                seen.add(p)
+            key = p.lower()
+            if key not in seen:
+                seen.add(key)
                 ordered.append(p)
         return "_".join(ordered)
 
