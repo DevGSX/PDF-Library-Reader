@@ -103,6 +103,14 @@ def _group_letter(title):
     return first if first.isalpha() else "#"
 
 
+NO_SERIES_LABEL = "No Series"
+
+
+def _group_series(series):
+    stripped = (series or "").strip()
+    return stripped or NO_SERIES_LABEL
+
+
 class LibraryWindow(QMainWindow):
     def __init__(self, db: Database):
         super().__init__()
@@ -2373,6 +2381,7 @@ class LibraryWindow(QMainWindow):
 
         self._letter_headers = {}
         is_alpha_sort = sort_by == "title"
+        is_series_sort = sort_by == "series_order"
         # Both bars can show at once now -- the A-Z index (only meaningful
         # under Title sort) stays on top, with the Genre/Language filter bar
         # underneath it when that's turned on, so a large library sorted
@@ -2397,6 +2406,26 @@ class LibraryWindow(QMainWindow):
                     outer.addWidget(header)
                     outer.addWidget(self._build_cover_group(group_books))
                     self._letter_headers[letter] = header
+        elif is_series_sort and books:
+            # Same grouped-header idea as the A-Z index above, but the
+            # header is a Series name instead of a letter, and there's no
+            # index bar to jump with -- books already arrive in Series
+            # order (grouped by _series_order_key, with no-Series books
+            # last), each Series internally in Book # order, so grouping
+            # consecutive same-Series books here and laying each group out
+            # left-to-right (FlowLayout, via _build_cover_group) reproduces
+            # reading order visually, the same way the alphabet groups do.
+            groups = OrderedDict()
+            for book in books:
+                groups.setdefault(_group_series(book.get("series")), []).append(book)
+            for series_name, group_books in groups.items():
+                header = QLabel(series_name)
+                header.setStyleSheet(
+                    "font-weight: bold; font-size: 15px; color: #666;"
+                    "padding: 4px 2px; border-bottom: 2px solid #cfcfcf; margin-top: 6px;"
+                )
+                outer.addWidget(header)
+                outer.addWidget(self._build_cover_group(group_books))
         elif books:
             outer.addWidget(self._build_cover_group(books))
 
@@ -2435,8 +2464,18 @@ class LibraryWindow(QMainWindow):
         flow = FlowLayout(group_widget, margin=0, hspacing=14, vspacing=14)
         for book in books:
             pixmap, is_corrupted = ensure_thumbnail(book["id"], book["filepath"])
+            series_number = book.get("series_number")
+            # Bottom-left Book # badge: only for a book that's actually IN a
+            # series AND has a number set -- a series with no number given
+            # yet, or no series at all, shows no badge.
+            series_number_text = (
+                format_series_number(series_number)
+                if book.get("series") and series_number is not None
+                else None
+            )
             pixmap = decorate_thumbnail(
-                pixmap, book.get("status") or "unread", bool(book.get("is_favorite")), is_corrupted
+                pixmap, book.get("status") or "unread", bool(book.get("is_favorite")), is_corrupted,
+                series_number_text=series_number_text,
             )
             cell = CoverCell(
                 book,
