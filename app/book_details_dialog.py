@@ -9,7 +9,8 @@ values are joined with '_' -- e.g. "Science Fiction_Fantasy" or
 """
 import os
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QRegularExpression, Signal
+from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .file_naming import sync_filename
+from .file_naming import format_series_number, sync_filename
 from .multi_select_combo import MultiSelectComboBox
 from .presets import GENRE_PRESETS, LANGUAGE_PRESETS, merge_with_used, normalize_custom_value
 from .thumbnails import ensure_thumbnail
@@ -81,6 +82,32 @@ class BookDetailsDialog(QDialog):
         self.author_edit = QLineEdit()
         self.series_edit = QLineEdit()
 
+        # "Book #" -- a book's position within its Series (1, 2, 2.5 for a
+        # novella between two entries, etc.), so a series can be browsed in
+        # reading order rather than just grouped by name. Free-standing
+        # (not tied to any preset list, and deliberately left out of the
+        # filename convention -- see file_naming.py -- since it's a fifth
+        # field on top of an already-fixed five-slot naming scheme).
+        # Blank is a valid, common state: not every book belongs to a
+        # numbered series. The validator blocks anything that isn't blank
+        # or a plain non-negative number, so there's never an unparseable
+        # value to reject later at save time.
+        self.series_number_edit = QLineEdit()
+        self.series_number_edit.setPlaceholderText("Book #")
+        self.series_number_edit.setToolTip(
+            "This book's position within its Series -- e.g. 1, 2, or 2.5 "
+            "for a novella between two entries. Leave blank if it doesn't "
+            "have one. Used by the \"Series (Reading Order)\" sort option."
+        )
+        self.series_number_edit.setFixedWidth(70)
+        self.series_number_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"^\d{0,4}(\.\d{0,2})?$"))
+        )
+        series_row = QHBoxLayout()
+        series_row.addWidget(self.series_edit, stretch=1)
+        series_row.addWidget(QLabel("Book #"))
+        series_row.addWidget(self.series_number_edit)
+
         # Genre: checkable multi-select dropdown (a book can be more than one
         # genre), plus an optional extra custom genre typed on top of that.
         self.genre_combo = MultiSelectComboBox()
@@ -117,7 +144,7 @@ class BookDetailsDialog(QDialog):
 
         form.addRow("Title", self.title_edit)
         form.addRow("Author", self.author_edit)
-        form.addRow("Series", self.series_edit)
+        form.addRow("Series", series_row)
         form.addRow("Genre", genre_row)
         form.addRow("Language", language_row)
         form.addRow("Status", self.status_combo)
@@ -206,6 +233,7 @@ class BookDetailsDialog(QDialog):
         self.title_edit.setText(book["title"] or "")
         self.author_edit.setText(book["author"] or "")
         self.series_edit.setText(book["series"] or "")
+        self.series_number_edit.setText(self._format_series_number(book["series_number"]))
         self.annotation_edit.setPlainText(book["annotation"] or "")
 
         self._refresh_genre_language_options()
@@ -300,6 +328,24 @@ class BookDetailsDialog(QDialog):
         )
         return normalize_custom_value(self.series_edit.text().strip(), existing)
 
+    @staticmethod
+    def _format_series_number(value):
+        return format_series_number(value)
+
+    def _current_series_number(self):
+        """Parse the Book # field back into a float, or None if left
+        blank. The field's validator (see _build_ui) already guarantees
+        the text is either empty or a plain non-negative number, so this
+        never has anything genuinely invalid to reject -- the try/except
+        is just a defensive backstop."""
+        text = self.series_number_edit.text().strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
     def _save(self):
         if self.book_id is None:
             return
@@ -313,6 +359,7 @@ class BookDetailsDialog(QDialog):
                 language=self._current_language(),
                 annotation=self.annotation_edit.toPlainText().strip(),
             )
+            self.db.set_series_number(self.book_id, self._current_series_number())
             self.db.set_status(self.book_id, self.status_combo.currentData())
             renamed, info = sync_filename(self.db, self.book_id)
         except Exception as exc:

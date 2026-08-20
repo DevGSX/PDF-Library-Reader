@@ -12,6 +12,24 @@ def _split_multi_value(raw_value):
     return {t.strip() for t in (raw_value or "").split("_") if t.strip()}
 
 
+def _series_order_key(r):
+    """Sort key for "Series (Reading Order)": groups every book by its
+    Series (case-insensitively; books with no series sort after every
+    series, grouped together by title), then within a series by its Book #
+    (series_number -- books with no number sort after numbered ones), then
+    falls back to Title so ties (including two books that share a number,
+    or no series/number at all) still land in a stable, sensible order."""
+    series = (r.get("series") or "").strip()
+    num = r.get("series_number")
+    return (
+        0 if series else 1,
+        series.lower(),
+        0 if num is not None else 1,
+        num if num is not None else 0.0,
+        (r.get("title") or "").lower(),
+    )
+
+
 def get_data_dir() -> Path:
     """Where the library database lives (created on first run)."""
     data_dir = Path.home() / ".local" / "share" / "pdf-library-reader"
@@ -95,6 +113,9 @@ class Database:
             "language": "TEXT DEFAULT ''",
             "genre": "TEXT DEFAULT ''",
             "status": "TEXT DEFAULT 'unread'",  # 'unread' | 'to_read' | 'reading' | 'finished'
+            "series_number": "REAL DEFAULT NULL",  # position within Series, e.g. 1, 2, 2.5 -- NULL = not set
+            "file_hash": "TEXT DEFAULT ''",  # SHA-256 of the file's contents, for duplicate detection;
+                                              # '' until computed (on import, or a "Find Duplicates" scan)
         }
         for col, decl in new_columns.items():
             if col not in existing_cols:
@@ -113,12 +134,12 @@ class Database:
         self.conn.commit()
 
     # ---------------- Books ----------------
-    def add_book(self, filepath, title, page_count):
+    def add_book(self, filepath, title, page_count, file_hash=""):
         now = datetime.now().isoformat()
         self.conn.execute(
-            "INSERT OR IGNORE INTO books (filepath, title, added_date, page_count) "
-            "VALUES (?, ?, ?, ?)",
-            (filepath, title, now, page_count),
+            "INSERT OR IGNORE INTO books (filepath, title, added_date, page_count, file_hash) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (filepath, title, now, page_count, file_hash),
         )
         self.conn.commit()
         return self.get_book_by_path(filepath)
@@ -142,7 +163,7 @@ class Database:
         return cur.fetchone()
 
     def get_books(self, favorites_only=False, search=None, sort_by="title", descending=False,
-                  status=None, category_id=None, genres=None, languages=None):
+                  status=None, category_id=None, genres=None, languages=None, series=None):
         """Return library entries as plain dicts, each carrying a live file_size.
         `status`, if given, restricts to one of 'unread' | 'to_read' | 'reading' | 'finished'.
         `category_id`, if given, restricts to books belonging to that category.
@@ -153,7 +174,10 @@ class Database:
         works the same way for the (also possibly multi-value,
         "English_Bulgarian"-style) language field -- either way, a
         multi-value book matches if it has ANY of the values you're
-        filtering by, not all of them."""
+        filtering by, not all of them. `series`, if given, restricts to
+        books whose Series exactly matches any of the listed values -- a
+        book only ever has one Series, so unlike genres/languages this is
+        a plain membership check, not a token split."""
         query = "SELECT books.* FROM books"
         clauses, params = [], []
         if category_id is not None:
@@ -184,6 +208,9 @@ class Database:
         if languages:
             language_set = set(languages)
             rows = [r for r in rows if language_set & _split_multi_value(r["language"])]
+        if series:
+            series_set = set(series)
+            rows = [r for r in rows if (r["series"] or "").strip() in series_set]
 
         for r in rows:
             try:
@@ -196,6 +223,7 @@ class Database:
             "recent": lambda r: r["last_opened"] or "",
             "added": lambda r: r["added_date"] or "",
             "size": lambda r: r["file_size"],
+            "series_order": _series_order_key,
         }
         rows.sort(key=key_map.get(sort_by, key_map["title"]), reverse=descending)
         return rows
@@ -239,6 +267,22 @@ class Database:
         self.conn.execute("UPDATE books SET filepath = ? WHERE id = ?", (new_filepath, book_id))
         self.conn.commit()
 
+    def set_series_number(self, book_id, series_number):
+        """Set (or clear, with series_number=None) a book's position within
+        its Series -- e.g. 1, 2, or 2.5 for a novella between two entries.
+        Its own method rather than another update_metadata() field (like
+        set_status()) because update_metadata()'s `None` means "leave this
+        field unchanged", which would make it impossible to ever clear a
+        number back out once set."""
+        self.conn.execute(
+            "UPDATE books SET series_number = ? WHERE id = ?", (series_number, book_id)
+        )
+        self.conn.commit()
+
+    def update_file_hash(self, book_id, file_hash):
+        self.conn.execute("UPDATE books SET file_hash = ? WHERE id = ?", (file_hash, book_id))
+        self.conn.commit()
+
     def get_distinct_genres(self):
         """Individual genre tokens in use, splitting any multi-value
         ('Science Fiction_Fantasy') entries into their separate parts, so
@@ -263,12 +307,34 @@ class Database:
             tokens |= _split_multi_value(r["language"])
         return sorted(tokens, key=str.lower)
 
+    def get_distinct_series(self):
+        """Every distinct Series name currently in use, for the Series
+        filter dropdown. Unlike Genre/Language, a book only ever belongs
+        to one Series, so there's no '_'-multi-value splitting here."""
+        cur = self.conn.execute(
+            "SELECT DISTINCT series FROM books WHERE series IS NOT NULL AND series != ''"
+        )
+        return sorted({r["series"].strip() for r in cur.fetchall() if r["series"].strip()}, key=str.lower)
+
     def bulk_set_series(self, book_ids, value):
         book_ids = list(book_ids)
         if not book_ids:
             return
         self.conn.executemany(
             "UPDATE books SET series = ? WHERE id = ?", [(value, bid) for bid in book_ids]
+        )
+        self.conn.commit()
+
+    def bulk_set_series_number(self, book_ids, value):
+        """Counterpart to bulk_set_series() for the Book # field in the
+        right-click "Set Series" dialog -- its own method, like
+        set_series_number(), so a blank value can explicitly clear the
+        number back to NULL for every selected book."""
+        book_ids = list(book_ids)
+        if not book_ids:
+            return
+        self.conn.executemany(
+            "UPDATE books SET series_number = ? WHERE id = ?", [(value, bid) for bid in book_ids]
         )
         self.conn.commit()
 

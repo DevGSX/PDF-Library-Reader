@@ -3,6 +3,8 @@ cell for the image-preview grid."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from .file_naming import format_series_number
+
 STATUS_CHIP_STYLE = (
     "color: white; border-radius: 8px; padding: 1px 8px;"
     "font-size: 11px; font-weight: bold;"
@@ -18,6 +20,12 @@ def human_size(num_bytes):
             return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} TB"
+
+
+def format_series(series, series_number):
+    """'Dune Saga #1', or just 'Dune Saga' if no Book # is set."""
+    number_text = format_series_number(series_number)
+    return f"{series} #{number_text}" if number_text else series
 
 
 class BookCard(QWidget):
@@ -78,6 +86,8 @@ class BookCard(QWidget):
             meta_bits.append(f"{book['page_count']} pages")
         if book.get("author"):
             meta_bits.append(book["author"])
+        if book.get("series"):
+            meta_bits.append(format_series(book["series"], book.get("series_number")))
         if book.get("genre"):
             meta_bits.append(book["genre"])
         if book.get("last_opened"):
@@ -182,6 +192,8 @@ class CoverCell(QWidget):
         tooltip_bits = [book["title"], human_size(book.get("file_size", -1))]
         if book.get("author"):
             tooltip_bits.append(book["author"])
+        if book.get("series"):
+            tooltip_bits.append(format_series(book["series"], book.get("series_number")))
         if book.get("genre"):
             tooltip_bits.append(book["genre"])
         if book.get("is_favorite"):

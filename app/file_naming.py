@@ -8,11 +8,18 @@ Genre and Language can each hold more than one value, separated by '_'
 field separator below) and '_' are perfectly ordinary characters on every
 filesystem, so neither needs any special handling to show up correctly in
 an actual filename.
+
+A book's position within its Series (its "Book #" -- 1, 2, 2.5 for a
+novella between two entries, etc.) rides along inside the Series slot
+itself, as "Drawing#1", "Drawing#2" -- rather than adding a sixth
+position to what's otherwise a fixed five-field naming scheme. See
+combine_series_and_number() / split_series_and_number() below.
 """
 import os
 import re
 
 _ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+_SERIES_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)?$")
 MAX_NAME_LENGTH = 180  # keep well under typical filesystem filename limits
 
 
@@ -23,7 +30,43 @@ def _sanitize(text):
     return text
 
 
-def build_filename(title, author, series, genre, language, ext):
+def format_series_number(value):
+    """None/blank -> ''. A whole number displays without a trailing ".0"
+    (2, not 2.0); a genuine fraction (e.g. 2.5, for a novella between two
+    entries) keeps its decimal. Shared by the filename encoding below and
+    by the UI (Book Details' field, the bulk Set Series dialog, and the
+    list/grid display), so all three agree on exactly the same text for
+    the same number."""
+    if value is None or value == "":
+        return ""
+    value = float(value)
+    return str(int(value)) if value.is_integer() else str(value)
+
+
+def combine_series_and_number(series, series_number):
+    """'Drawing' + 1 -> 'Drawing#1' -- this exact string is what lands in
+    the filename's Series slot (see build_filename). No number set, or no
+    series at all, just returns `series` unchanged."""
+    series = series or ""
+    number_text = format_series_number(series_number)
+    return f"{series}#{number_text}" if series and number_text else series
+
+
+def split_series_and_number(series_field):
+    """Inverse of combine_series_and_number(): 'Drawing#1' -> ('Drawing', 1.0);
+    plain 'Drawing' -> ('Drawing', None). If the text after the last '#'
+    isn't a plain number, the whole string is treated as the series name
+    with no number, so a series that happens to contain a '#' for some
+    other reason isn't silently mangled."""
+    series_field = series_field or ""
+    if "#" in series_field:
+        name, _, number_text = series_field.rpartition("#")
+        if name and _SERIES_NUMBER_RE.match(number_text):
+            return name, float(number_text)
+    return series_field, None
+
+
+def build_filename(title, author, series, genre, language, ext, series_number=None):
     """'Title - Author - Series - Genre - Language.pdf'. Each field keeps
     its own fixed position -- a field left blank shows up as an empty gap
     between two dashes (e.g. "Title -  - Series -  - English.pdf") rather
@@ -32,9 +75,12 @@ def build_filename(title, author, series, genre, language, ext):
     trimmed instead of leaving dangling dashes, so a book with nothing but
     a title still just becomes 'Title.pdf'. A book with more than one
     genre or language renders as such directly, e.g. "English_Bulgarian"
-    or "Science Fiction_Fantasy"."""
+    or "Science Fiction_Fantasy". A series_number (Book #), if given,
+    rides inside the Series slot itself as "Series#N" -- see
+    combine_series_and_number()."""
+    series_field = combine_series_and_number(_sanitize(series), series_number)
     fields = [
-        _sanitize(title), _sanitize(author), _sanitize(series),
+        _sanitize(title), _sanitize(author), series_field,
         _sanitize(genre), _sanitize(language),
     ]
     while len(fields) > 1 and not fields[-1]:
@@ -53,7 +99,9 @@ def parse_filename(filename):
     never shift out of their slot. Title always ends up populated (falling
     back to the whole filename, or 'Untitled' if even that is empty); the
     rest default to '' when not present. Extra segments beyond five are
-    ignored.
+    ignored. The Series slot is further split into a plain 'series' name
+    and a separate 'series_number' (float, or None if not present) -- see
+    split_series_and_number().
 
     This only round-trips exactly for filenames this app generated. A
     filename dropped in from outside that happens to contain ' - ' will
@@ -62,7 +110,10 @@ def parse_filename(filename):
     """
     name = os.path.splitext(filename)[0].strip()
     if not name:
-        return {"title": "Untitled", "author": "", "series": "", "genre": "", "language": ""}
+        return {
+            "title": "Untitled", "author": "", "series": "",
+            "series_number": None, "genre": "", "language": "",
+        }
     parts = [p.strip() for p in name.split(" - ")]
     keys = ["title", "author", "series", "genre", "language"]
     result = {k: "" for k in keys}
@@ -70,6 +121,7 @@ def parse_filename(filename):
         result[key] = value
     if not result["title"]:
         result["title"] = name
+    result["series"], result["series_number"] = split_series_and_number(result["series"])
     return result
 
 
@@ -98,7 +150,8 @@ def sync_filename(db, book_id):
     directory = os.path.dirname(old_path)
     ext = os.path.splitext(old_path)[1]
     desired_name = build_filename(
-        book["title"], book["author"], book["series"], book["genre"], book["language"], ext
+        book["title"], book["author"], book["series"], book["genre"], book["language"], ext,
+        series_number=book["series_number"],
     )
     desired_path = os.path.join(directory, desired_name)
 

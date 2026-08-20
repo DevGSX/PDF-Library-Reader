@@ -7,8 +7,8 @@ import zipfile
 from collections import OrderedDict
 
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
-from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QRegularExpression, Qt, QTimer
+from PySide6.QtGui import QAction, QKeySequence, QRegularExpressionValidator, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -43,7 +43,8 @@ from .bookmark_export import read_export_file as read_bookmark_export_file
 from .bookmark_export import write_export_file as write_bookmark_export_file
 from .category_export import apply_import_data, build_export_data, read_export_file, write_export_file
 from .database import Database
-from .file_naming import parse_filename, sync_filename
+from .duplicates import compute_file_hash, find_duplicate_groups
+from .file_naming import format_series_number, parse_filename, sync_filename
 from .flow_layout import FlowLayout
 from .full_archive import apply_archive as apply_full_archive
 from .full_archive import build_manifest as build_archive_manifest
@@ -56,7 +57,7 @@ from .reader_window import ReaderWindow
 from .search_dialog import TextSearchDialog
 from .themes import DARK_THEME, LIGHT_THEME
 from .thumbnails import delete_thumbnail, ensure_thumbnail
-from .widgets import BookCard, CoverCell
+from .widgets import BookCard, CoverCell, human_size
 
 # index in the sort combo -> (sort key, descending?)
 SORT_OPTIONS = {
@@ -67,7 +68,14 @@ SORT_OPTIONS = {
     4: ("added", True),    # Recently added first
     5: ("size", True),     # Largest file first
     6: ("size", False),    # Smallest file first
+    7: ("series_order", False),  # Series (Reading Order)
 }
+
+# Derived rather than hardcoded a second time, so _apply_series_suggestion()
+# (clicking a Series in the search-suggestions preview) always lands on
+# whichever combo index actually corresponds to "series_order" above, even
+# if SORT_OPTIONS is ever reordered.
+SERIES_ORDER_SORT_INDEX = next(idx for idx, (key, _) in SORT_OPTIONS.items() if key == "series_order")
 
 # index in the status filter combo -> status value passed to the database
 STATUS_FILTER_OPTIONS = [
@@ -116,9 +124,11 @@ class LibraryWindow(QMainWindow):
         self.genre_lang_filter_mode = False  # when on, replaces the A-Z bar with genre/language filters
         self.selected_genres = set()
         self.selected_languages = set()
+        self.selected_series = set()
         self._missing_book_ids = set()  # books flagged at last sync -- gone, or outside the library folder
         self._truly_missing_book_ids = set()  # subset of the above: file not found on disk at all
         self._relocatable_book_ids = set()  # subset of the above: file exists, just outside the library folder
+        self._duplicate_groups = []  # populated by _sync_duplicate_books() -- see there
 
         self._build_ui()
         self._apply_theme(self.db.get_setting("theme", "light"))
@@ -188,10 +198,10 @@ class LibraryWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        self.genre_lang_filter_btn = QPushButton("Genres && Languages")
+        self.genre_lang_filter_btn = QPushButton("Genres, Languages && Series")
         self.genre_lang_filter_btn.setCheckable(True)
         self.genre_lang_filter_btn.setToolTip(
-            "Show a Genre/Language filter bar below the A-Z index (Image Preview)"
+            "Show a Genre/Language/Series filter bar below the A-Z index (Image Preview)"
         )
         self.genre_lang_filter_btn.clicked.connect(self.toggle_genre_lang_filter_mode)
         toolbar.addWidget(self.genre_lang_filter_btn)
@@ -298,7 +308,17 @@ class LibraryWindow(QMainWindow):
                 "Recently Added",
                 "File Size (Largest)",
                 "File Size (Smallest)",
+                "Series (Reading Order)",
             ]
+        )
+        self.sort_combo.setItemData(
+            7,
+            "Groups every book by Series, ordered within each by its Book # "
+            "(set in Book Details) -- books with no series sort after every "
+            "series; books in a series with no number sort after numbered "
+            "ones. Combine with the search box or a category to browse just "
+            "one series in reading order.",
+            Qt.ToolTipRole,
         )
         self.sort_combo.currentIndexChanged.connect(self._reset_page_and_refresh)
         controls.addWidget(self.sort_combo)
@@ -343,6 +363,23 @@ class LibraryWindow(QMainWindow):
         missing_row.addStretch()
         layout.addLayout(missing_row)
         self.missing_files_btn.hide()
+
+        # Duplicates indicator: shown after a sync (startup, Refresh/F5, or
+        # right after Add Book(s)/Add Folder) finds books that look like
+        # duplicates of each other -- see _sync_duplicate_books().
+        duplicates_row = QHBoxLayout()
+        self.duplicates_btn = QPushButton("")
+        self.duplicates_btn.setFlat(True)
+        self.duplicates_btn.setCursor(Qt.PointingHandCursor)
+        self.duplicates_btn.setStyleSheet(
+            "color: #b45309; text-align: left; border: none; padding: 2px 0px;"
+        )
+        self.duplicates_btn.setToolTip("Click to review and choose what to do")
+        self.duplicates_btn.clicked.connect(self._show_duplicates_dialog)
+        duplicates_row.addWidget(self.duplicates_btn)
+        duplicates_row.addStretch()
+        layout.addLayout(duplicates_row)
+        self.duplicates_btn.hide()
 
         # Live categorized preview (Titles / Authors / Series / Genres) shown
         # while typing in the filter box; hidden whenever no text or no matches.
@@ -467,7 +504,7 @@ class LibraryWindow(QMainWindow):
             buttons[letter] = btn
         return bar, buttons
 
-    # ------------- Genre / Language filter bar (replaces the A-Z bar) -------------
+    # ------------- Genre / Language / Series filter bar (replaces the A-Z bar) -------------
     def _build_genre_lang_bar(self):
         bar = QWidget()
         bar_layout = QHBoxLayout(bar)
@@ -491,21 +528,33 @@ class LibraryWindow(QMainWindow):
         self.language_filter_combo.selection_changed.connect(self._on_language_filter_changed)
         bar_layout.addWidget(self.language_filter_combo, stretch=1)
 
+        bar_layout.addWidget(QLabel("Series:"))
+        self.series_filter_combo = MultiSelectComboBox()
+        self.series_filter_combo.setToolTip(
+            "Select one or more series -- shows only books belonging to one "
+            "of them. Combine with the \"Series (Reading Order)\" sort to "
+            "browse a series in order."
+        )
+        self.series_filter_combo.selection_changed.connect(self._on_series_filter_changed)
+        bar_layout.addWidget(self.series_filter_combo, stretch=1)
+
         clear_btn = QPushButton("Clear Filters")
-        clear_btn.setToolTip("Deselect every genre and language filter")
+        clear_btn.setToolTip("Deselect every genre, language, and series filter")
         clear_btn.clicked.connect(self._clear_genre_lang_filters)
         bar_layout.addWidget(clear_btn)
 
         return bar
 
     def _refresh_genre_lang_bar_contents(self):
-        """Rebuild the genre/language dropdown items from the current preset
-        lists plus any custom values actually in use, so newly-added custom
-        genres/languages show up as filter options too. Checked state (from
-        self.selected_genres/languages) is preserved across rebuilds. Every
-        item stays selectable regardless of current match count -- disabling
-        an item you've already checked would leave you unable to uncheck it
-        again once its filtered result count drops to zero."""
+        """Rebuild the genre/language/series dropdown items from the
+        current preset lists (Series has none -- it's freeform) plus any
+        custom values actually in use, so newly-added custom genres/
+        languages/series show up as filter options too. Checked state
+        (from self.selected_genres/languages/series) is preserved across
+        rebuilds. Every item stays selectable regardless of current match
+        count -- disabling an item you've already checked would leave you
+        unable to uncheck it again once its filtered result count drops to
+        zero."""
         all_genres = self._current_genre_options()
         self.genre_filter_combo.blockSignals(True)
         self.genre_filter_combo.clear_items()
@@ -520,6 +569,13 @@ class LibraryWindow(QMainWindow):
         self.language_filter_combo.set_checked_items(self.selected_languages)
         self.language_filter_combo.blockSignals(False)
 
+        all_series = self._current_series_options()
+        self.series_filter_combo.blockSignals(True)
+        self.series_filter_combo.clear_items()
+        self.series_filter_combo.add_items(all_series)
+        self.series_filter_combo.set_checked_items(self.selected_series)
+        self.series_filter_combo.blockSignals(False)
+
     def _current_genre_options(self):
         """Every genre available to pick from anywhere in the app: the
         preset list plus any custom genre actually in use on a book right
@@ -532,6 +588,12 @@ class LibraryWindow(QMainWindow):
     def _current_language_options(self):
         """Language counterpart to _current_genre_options() above."""
         return merge_with_used(LANGUAGE_PRESETS, self.db.get_distinct_languages())
+
+    def _current_series_options(self):
+        """Every Series name currently in use, case-insensitively deduped
+        -- Series has no preset list at all (it's freeform), unlike Genre/
+        Language."""
+        return merge_with_used([], self.db.get_distinct_series())
 
 
     def _on_genre_filter_changed(self):
@@ -547,9 +609,14 @@ class LibraryWindow(QMainWindow):
         self.selected_languages = set(self.language_filter_combo.checked_items())
         QTimer.singleShot(0, self._reset_page_and_refresh)  # see _on_genre_filter_changed
 
+    def _on_series_filter_changed(self):
+        self.selected_series = set(self.series_filter_combo.checked_items())
+        QTimer.singleShot(0, self._reset_page_and_refresh)  # see _on_genre_filter_changed
+
     def _clear_genre_lang_filters(self):
         self.selected_genres.clear()
         self.selected_languages.clear()
+        self.selected_series.clear()
         self._reset_page_and_refresh()
 
     def toggle_genre_lang_filter_mode(self, checked):
@@ -560,6 +627,7 @@ class LibraryWindow(QMainWindow):
             # invisible active filter left behind once the bar disappears.
             self.selected_genres.clear()
             self.selected_languages.clear()
+            self.selected_series.clear()
         self.refresh_list()
 
     def _build_category_sidebar(self):
@@ -1241,25 +1309,64 @@ class LibraryWindow(QMainWindow):
         existing = merge_with_used(
             [], (b["series"] for b in self.db.get_books() if b.get("series"))
         )
-        current = ""
+        current_series = ""
+        current_number = ""
         if len(book_ids) == 1:
-            current = (self.db.get_book(book_ids[0]) or {"series": ""})["series"] or ""
+            book = self.db.get_book(book_ids[0])
+            if book:
+                current_series = book["series"] or ""
+                current_number = format_series_number(book["series_number"])
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Set Series")
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("Series:"))
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Series:"))
         combo = ClickToOpenComboBox()
         combo.addItems(existing)
-        combo.setCurrentText(current)
-        layout.addWidget(combo)
+        combo.setCurrentText(current_series)
+        row.addWidget(combo, stretch=1)
+
+        row.addWidget(QLabel("Book #"))
+        number_edit = QLineEdit()
+        number_edit.setText(current_number)
+        number_edit.setPlaceholderText("Book #")
+        number_edit.setFixedWidth(70)
+        number_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"^\d{0,4}(\.\d{0,2})?$"))
+        )
+        if len(book_ids) > 1:
+            number_edit.setToolTip(
+                "Sets the same Book # for every selected book -- leave blank "
+                "to clear it for all of them instead. Usually only useful "
+                "one book at a time; use Book Details for that."
+            )
+        else:
+            number_edit.setToolTip(
+                "This book's position within its Series -- e.g. 1, 2, or "
+                "2.5 for a novella between two entries. Leave blank if it "
+                "doesn't have one. Used by the \"Series (Reading Order)\" "
+                "sort option."
+            )
+        row.addWidget(number_edit)
+        layout.addLayout(row)
         layout.addLayout(self._ok_cancel_row(dialog))
 
         if dialog.exec() != QDialog.Accepted:
             return
-        self._apply_bulk_field(
-            book_ids, self.db.bulk_set_series, combo.currentText().strip(), clear_selection_after
-        )
+
+        series_value = combo.currentText().strip()
+        number_text = number_edit.text().strip()
+        series_number = float(number_text) if number_text else None
+
+        self.db.bulk_set_series(book_ids, series_value)
+        self.db.bulk_set_series_number(book_ids, series_number)
+        for book_id in book_ids:
+            sync_filename(self.db, book_id)
+        if clear_selection_after:
+            self.clear_selection()
+        self.refresh_list()
 
     def _set_genre_for_books(self, book_ids, clear_selection_after=False):
         current = ""
@@ -1424,6 +1531,7 @@ class LibraryWindow(QMainWindow):
         )
         for path in paths:
             self._import_pdf(self._move_into_library_folder(path))
+        self._sync_duplicate_books()
         self.refresh_list()
 
     def add_folder(self):
@@ -1437,6 +1545,7 @@ class LibraryWindow(QMainWindow):
                     path = self._move_into_library_folder(os.path.join(root, f))
                     self._import_pdf(path)
                     count += 1
+        self._sync_duplicate_books()
         self.refresh_list()
         QMessageBox.information(self, "Import complete", f"Added {count} PDF file(s).")
 
@@ -1496,8 +1605,17 @@ class LibraryWindow(QMainWindow):
         except Exception:
             pass  # page_count stays 0; title still comes from the filename
 
-        book = self.db.add_book(abs_path, parsed["title"], page_count)
-        if book and is_new_book and (parsed["author"] or parsed["series"] or parsed["genre"] or parsed["language"]):
+        # A content hash lets duplicate detection catch the exact same file
+        # re-imported under a different name or from a different source --
+        # only worth computing for a genuinely new import (see
+        # _sync_duplicate_books()); an already-tracked path's hash, if any,
+        # is left exactly as it was.
+        file_hash = compute_file_hash(abs_path) if is_new_book else ""
+        book = self.db.add_book(abs_path, parsed["title"], page_count, file_hash)
+        if book and is_new_book and (
+            parsed["author"] or parsed["series"] or parsed["genre"] or parsed["language"]
+            or parsed["series_number"] is not None
+        ):
             # Only backfill these for a genuinely new import -- never overwrite
             # metadata someone already edited by hand on a book already in the library.
             self.db.update_metadata(
@@ -1507,6 +1625,10 @@ class LibraryWindow(QMainWindow):
                 genre=parsed["genre"],
                 language=parsed["language"],
             )
+            if parsed["series_number"] is not None:
+                # Its own call, not folded into update_metadata() above --
+                # see set_series_number()'s docstring for why.
+                self.db.set_series_number(book["id"], parsed["series_number"])
 
     def set_favorites_filter(self, favorites_only):
         self.show_favorites_only = favorites_only
@@ -1537,6 +1659,7 @@ class LibraryWindow(QMainWindow):
         number of newly-discovered books added during this refresh."""
         added = self._scan_library_folder()
         self._sync_missing_files()
+        self._sync_duplicate_books()
         self.refresh_categories_sidebar()
         self.refresh_list()
         if show_feedback:
@@ -1768,6 +1891,257 @@ class LibraryWindow(QMainWindow):
             dialog.close()
             self.refresh_library(show_feedback=False)
 
+    # ------------- Duplicate detection -------------
+    def _sync_duplicate_books(self):
+        """Flag books that look like duplicates of each other. An identical
+        file (matching content hash) is the strongest signal; a matching
+        Title+Author is a weaker, free-to-check fallback that also catches
+        the same book re-imported under a different filename or from a
+        different source, before either copy has ever been hashed. Runs on
+        every refresh and right after Add Book(s)/Add Folder, same as the
+        missing-files check, but -- unlike that hash computation itself --
+        never touches the filesystem here: hashing a whole library on every
+        refresh would be far too expensive for a large one, so an existing
+        book's hash is only ever computed at import time (_import_pdf) or
+        during an explicit "Scan Entire Library..." pass from the dialog
+        below."""
+        self._duplicate_groups = find_duplicate_groups(self.db.get_books())
+        self._update_duplicates_indicator()
+
+    def _update_duplicates_indicator(self):
+        n = len(self._duplicate_groups)
+        self.duplicates_btn.setVisible(n > 0)
+        if n > 0:
+            total_books = sum(len(g["book_ids"]) for g in self._duplicate_groups)
+            self.duplicates_btn.setText(
+                f"\u26a0 {n} possible duplicate group{'s' if n != 1 else ''} "
+                f"({total_books} books) \u2014 click for details"
+            )
+
+    def _show_duplicates_dialog(self):
+        if not self._duplicate_groups:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Possible Duplicate Books")
+        dialog.resize(560, 420)
+        layout = QVBoxLayout(dialog)
+
+        hint = QLabel(
+            "These look like duplicates \u2014 either byte-identical files "
+            "(the strongest signal) or a matching Title & Author (a weaker "
+            "one, since two different editions or scans can share both). "
+            "Nothing happens automatically: review each group and select "
+            "whichever copy(ies) you don't want to keep.\n\n"
+            "\u201cRemove Selected From Library\u201d only detaches the "
+            "library entry -- the file stays on disk untouched, so if it "
+            "lives inside your watched Library Folder, the next Refresh "
+            "will just re-import it. \u201cDelete Selected From Disk\u201d "
+            "actually deletes the file too, which is what you want in "
+            "that case -- but it's permanent."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        list_widget = QListWidget()
+        list_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self._populate_duplicates_list(list_widget)
+        layout.addWidget(list_widget)
+
+        btn_row = QHBoxLayout()
+        scan_btn = QPushButton("Scan Entire Library for Exact Duplicates...")
+        scan_btn.setToolTip(
+            "Compute a content hash for every book that doesn't have one yet "
+            "-- can take a while on a large library -- to catch byte-identical "
+            "files that a Title/Author match alone would miss, including "
+            "books added before this feature existed"
+        )
+        scan_btn.clicked.connect(lambda: self._run_duplicate_hash_scan(dialog, list_widget))
+        btn_row.addWidget(scan_btn)
+        btn_row.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.close)
+        btn_row.addWidget(close_btn)
+
+        remove_btn = QPushButton("Remove Selected From Library")
+        remove_btn.setToolTip(
+            "Detach just the selected book(s) from your library -- the file "
+            "itself is left on disk. If it's inside your watched Library "
+            "Folder, the next Refresh will re-import it -- use \u201cDelete "
+            "Selected From Disk\u201d instead if that's not what you want."
+        )
+        remove_btn.clicked.connect(lambda: self._remove_selected_duplicates(dialog, list_widget))
+        btn_row.addWidget(remove_btn)
+
+        delete_btn = QPushButton("Delete Selected From Disk")
+        delete_btn.setStyleSheet("color: #b91c1c;")
+        delete_btn.setToolTip(
+            "Permanently delete the selected book(s)' PDF file(s) from disk, "
+            "and remove them from your library -- this is what actually "
+            "stops a duplicate living in your Library Folder from coming "
+            "back on the next Refresh. Cannot be undone."
+        )
+        delete_btn.clicked.connect(lambda: self._delete_selected_duplicates(dialog, list_widget))
+        btn_row.addWidget(delete_btn)
+
+        layout.addLayout(btn_row)
+        dialog.exec()
+
+    def _populate_duplicates_list(self, list_widget):
+        """(Re)build the group/book listing from self._duplicate_groups.
+        A group header is its own, non-selectable list item -- only the
+        book rows underneath it carry a book_id and can be selected."""
+        list_widget.clear()
+        for group in self._duplicate_groups:
+            books = [b for b in (self.db.get_book(bid) for bid in group["book_ids"]) if b]
+            if len(books) < 2:
+                continue  # one of them was removed from under us since the last sync
+            label = "Exact file match" if group["match_type"] == "hash" else "Same Title & Author"
+
+            header = QListWidgetItem(f"\u2014 {label} \u2014")
+            header.setFlags(Qt.ItemIsEnabled)  # visible, but not selectable
+            header.setForeground(Qt.gray)
+            list_widget.addItem(header)
+
+            for book in sorted(books, key=lambda b: b["title"].lower()):
+                try:
+                    size = human_size(os.path.getsize(book["filepath"]))
+                except OSError:
+                    size = "file missing"
+                item = QListWidgetItem(f"    {book['title']} \u2014 {size} \u2014 {book['filepath']}")
+                item.setData(Qt.UserRole, book["id"])
+                list_widget.addItem(item)
+
+    def _remove_selected_duplicates(self, dialog, list_widget):
+        book_ids = [
+            item.data(Qt.UserRole)
+            for item in list_widget.selectedItems()
+            if item.data(Qt.UserRole) is not None
+        ]
+        if not book_ids:
+            QMessageBox.information(
+                self, "Nothing selected", "Select one or more books in the list first."
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "Remove selected duplicates",
+            f"Remove {len(book_ids)} selected book(s) from your library? "
+            f"This only removes their library entries (bookmarks, categories, "
+            f"highlights, reading status) \u2014 the files themselves are left "
+            f"on disk, untouched.",
+        )
+        if reply != QMessageBox.Yes:
+            return
+        for book_id in book_ids:
+            self.db.remove_book(book_id)
+            delete_thumbnail(book_id)
+        dialog.close()
+        self.refresh_library(show_feedback=False)
+
+    def _delete_selected_duplicates(self, dialog, list_widget):
+        """Permanently delete the selected book(s)' files from disk, then
+        remove their library entries -- unlike "Remove Selected From
+        Library", this is what actually stops a duplicate from coming
+        right back: a book living inside the watched Library Folder gets
+        silently re-imported as "new" on the very next Refresh if only its
+        library entry (and not the file itself) is removed.
+
+        The library entry is only ever removed once the file is
+        confirmed gone (deleted just now, or already missing) -- if
+        deletion fails (permissions, a locked file, etc.), that book is
+        left completely untouched rather than orphaning a library entry
+        for a file that's still sitting on disk unprotected."""
+        book_ids = [
+            item.data(Qt.UserRole)
+            for item in list_widget.selectedItems()
+            if item.data(Qt.UserRole) is not None
+        ]
+        if not book_ids:
+            QMessageBox.information(
+                self, "Nothing selected", "Select one or more books in the list first."
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete selected duplicates",
+            f"Permanently delete {len(book_ids)} selected book(s)' PDF file(s) "
+            f"from disk, and remove them from your library?\n\n"
+            f"This cannot be undone.",
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        deleted, failed = [], []
+        for book_id in book_ids:
+            book = self.db.get_book(book_id)
+            if not book:
+                continue  # already gone somehow -- nothing left to do
+            try:
+                if os.path.exists(book["filepath"]):
+                    os.remove(book["filepath"])
+            except OSError as exc:
+                failed.append((book["title"], str(exc)))
+                continue  # file is still on disk -- leave the library entry alone too
+            self.db.remove_book(book_id)
+            delete_thumbnail(book_id)
+            deleted.append(book_id)
+
+        dialog.close()
+        self.refresh_library(show_feedback=False)
+
+        if failed:
+            details = "\n".join(f"\u2022 {title}: {err}" for title, err in failed)
+            QMessageBox.warning(
+                self,
+                "Some files couldn't be deleted",
+                f"Deleted {len(deleted)} of {len(book_ids)} book(s). The rest "
+                f"were left untouched in your library since their files "
+                f"couldn't be deleted:\n\n{details}",
+            )
+
+    def _run_duplicate_hash_scan(self, dialog, list_widget):
+        """Compute a content hash for every book that doesn't already have
+        one, then re-check for duplicates with that fuller picture. This is
+        the only place a whole library's worth of files ever gets hashed at
+        once -- an explicit, on-demand action (with its own progress and
+        Cancel), rather than something that happens silently on every
+        refresh."""
+        books = [b for b in self.db.get_books() if not b.get("file_hash")]
+        if not books:
+            QMessageBox.information(
+                self, "Nothing to scan",
+                "Every book already has a content hash on file \u2014 nothing left to compute.",
+            )
+            return
+
+        progress = QProgressDialog("Scanning for exact duplicates...", "Cancel", 0, len(books), self)
+        progress.setWindowTitle("Scanning Library")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        QApplication.processEvents()
+
+        for i, book in enumerate(books):
+            if progress.wasCanceled():
+                break
+            progress.setLabelText(f"Hashing {i + 1} of {len(books)}: {book['title']}")
+            progress.setValue(i)
+            QApplication.processEvents()
+            file_hash = compute_file_hash(book["filepath"])
+            if file_hash:
+                self.db.update_file_hash(book["id"], file_hash)
+        progress.close()
+
+        self._sync_duplicate_books()
+        if self._duplicate_groups:
+            self._populate_duplicates_list(list_widget)
+        else:
+            dialog.close()
+            QMessageBox.information(self, "No duplicates found", "No duplicate books were found.")
+
     def refresh_list(self):
         # Preserve scroll position across the rebuild below -- otherwise
         # selecting a book, toggling a favorite, or any other small action
@@ -1787,6 +2161,7 @@ class LibraryWindow(QMainWindow):
             category_id=self.selected_category_id,
             genres=list(self.selected_genres) if self.selected_genres else None,
             languages=list(self.selected_languages) if self.selected_languages else None,
+            series=list(self.selected_series) if self.selected_series else None,
         )
 
         # Books whose file wasn't found at the last sync (startup or a
@@ -1916,7 +2291,7 @@ class LibraryWindow(QMainWindow):
             self._add_suggestion_header("Series")
             for row in results["series"]:
                 label = f"{row['name']} ({row['count']} book{'s' if row['count'] != 1 else ''})"
-                self._add_suggestion_row(label, row["name"])
+                self._add_suggestion_row(label, row["name"], on_click=self._apply_series_suggestion)
         if results["genres"]:
             self._add_suggestion_header("Genres")
             for row in results["genres"]:
@@ -1938,17 +2313,35 @@ class LibraryWindow(QMainWindow):
         label.setStyleSheet("font-weight: bold; color: #888; font-size: 11px; padding-top: 4px;")
         self.suggestion_layout.addWidget(label)
 
-    def _add_suggestion_row(self, label_text, filter_value):
+    def _add_suggestion_row(self, label_text, filter_value, on_click=None):
+        on_click = on_click or self._apply_suggestion
         btn = QPushButton(label_text)
         btn.setFlat(True)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setStyleSheet("text-align: left; padding: 2px 8px; border: none;")
-        btn.clicked.connect(lambda: self._apply_suggestion(filter_value))
+        btn.clicked.connect(lambda: on_click(filter_value))
         self.suggestion_layout.addWidget(btn)
 
     def _apply_suggestion(self, value):
         self.search_box.setText(value)  # triggers refresh_list + _update_search_suggestions
         self.suggestion_panel.hide()    # then collapse the preview -- selection made
+
+    def _apply_series_suggestion(self, value):
+        """Same as _apply_suggestion(), but also switches the sort mode to
+        "Series (Reading Order)" -- clicking a Series in the search
+        preview means "show me this series", and reading order is
+        virtually always what you want once you're looking at just one
+        series. Both widgets' change signals are blocked and a single
+        manual refresh is triggered instead, so this doesn't cause two
+        redundant refreshes back to back."""
+        self.search_box.blockSignals(True)
+        self.search_box.setText(value)
+        self.search_box.blockSignals(False)
+        self.sort_combo.blockSignals(True)
+        self.sort_combo.setCurrentIndex(SERIES_ORDER_SORT_INDEX)
+        self.sort_combo.blockSignals(False)
+        self.suggestion_panel.hide()
+        self._reset_page_and_refresh()
 
     # ------------- Simple Text (list) view -------------
     def _render_list(self, books):
