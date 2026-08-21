@@ -1230,6 +1230,7 @@ class LibraryWindow(QMainWindow):
         menu.addAction("Set Genre...").triggered.connect(lambda: self._set_genre_for_books([book_id]))
         menu.addAction("Set Language...").triggered.connect(lambda: self._set_language_for_books([book_id]))
         menu.addAction("Remove from Library").triggered.connect(lambda: self.remove_book(book_id))
+        menu.addAction("Delete from Disk...").triggered.connect(lambda: self.delete_book_from_disk(book_id))
         menu.exec(global_pos)
 
     def _show_bulk_context_menu(self, book_ids, global_pos):
@@ -1260,6 +1261,9 @@ class LibraryWindow(QMainWindow):
         )
         menu.addAction(f"Remove {n} Selected from Library").triggered.connect(
             lambda: self._bulk_remove_books(list(book_ids))
+        )
+        menu.addAction(f"Delete {n} Selected from Disk...").triggered.connect(
+            lambda: self._bulk_delete_books_from_disk(list(book_ids))
         )
         menu.addAction("Clear Selection").triggered.connect(self.clear_selection)
         menu.exec(global_pos)
@@ -1475,6 +1479,87 @@ class LibraryWindow(QMainWindow):
         if clear_selection_after:
             self.clear_selection()
         self.refresh_list()
+
+    def _delete_books_from_disk(self, book_ids):
+        """Permanently deletes the given books' PDF files from disk, then
+        removes their library entries -- but only once a file is confirmed
+        gone (deleted just now, or already missing); if deletion fails
+        (permissions, a locked file, etc.) that book's entry is left
+        completely untouched rather than orphaning it for a file that's
+        still sitting on disk unprotected. No confirmation dialog here --
+        every caller is expected to confirm with the user itself, since
+        the right wording differs by context.
+
+        Returns (deleted_ids, failed) where failed is a list of
+        (title, error_message) tuples for anything that couldn't be
+        removed."""
+        deleted, failed = [], []
+        for book_id in book_ids:
+            book = self.db.get_book(book_id)
+            if not book:
+                continue  # already gone somehow -- nothing left to do
+            try:
+                if os.path.exists(book["filepath"]):
+                    os.remove(book["filepath"])
+            except OSError as exc:
+                failed.append((book["title"], str(exc)))
+                continue
+            self.db.remove_book(book_id)
+            delete_thumbnail(book_id)
+            self._selected_book_ids.discard(book_id)
+            deleted.append(book_id)
+        return deleted, failed
+
+    def delete_book_from_disk(self, book_id):
+        book = self.db.get_book(book_id)
+        if not book:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete from disk",
+            f"Permanently delete \u201c{book['title']}\u201d's PDF file from disk, "
+            f"and remove it from your library?\n\nThis cannot be undone.",
+        )
+        if reply != QMessageBox.Yes:
+            return
+        deleted, failed = self._delete_books_from_disk([book_id])
+        self._update_selection_indicator()
+        # Deferred: reachable from the book's own right-click menu, whose
+        # event Qt may still be dispatching on this widget.
+        QTimer.singleShot(0, self.refresh_list)
+        QTimer.singleShot(0, self.refresh_categories_sidebar)
+        if failed:
+            title, err = failed[0]
+            QMessageBox.warning(
+                self, "Couldn't delete file",
+                f"\u201c{title}\u201d was left untouched in your library since "
+                f"its file couldn't be deleted:\n\n{err}",
+            )
+
+    def _bulk_delete_books_from_disk(self, book_ids):
+        book_ids = list(book_ids)
+        reply = QMessageBox.question(
+            self,
+            "Delete from disk",
+            f"Permanently delete {len(book_ids)} selected book(s)' PDF file(s) "
+            f"from disk, and remove them from your library?\n\nThis cannot be undone.",
+        )
+        if reply != QMessageBox.Yes:
+            return
+        deleted, failed = self._delete_books_from_disk(book_ids)
+        self._update_selection_indicator()
+        # Deferred: this can be triggered from a right-click on one of the
+        # very books being deleted, whose event Qt is still dispatching.
+        QTimer.singleShot(0, self.refresh_list)
+        QTimer.singleShot(0, self.refresh_categories_sidebar)
+        if failed:
+            details = "\n".join(f"\u2022 {title}: {err}" for title, err in failed)
+            QMessageBox.warning(
+                self, "Some files couldn't be deleted",
+                f"Deleted {len(deleted)} of {len(book_ids)} book(s). The rest "
+                f"were left untouched in your library since their files "
+                f"couldn't be deleted:\n\n{details}",
+            )
 
     def _bulk_remove_books(self, book_ids):
         reply = QMessageBox.question(
@@ -2082,20 +2167,7 @@ class LibraryWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        deleted, failed = [], []
-        for book_id in book_ids:
-            book = self.db.get_book(book_id)
-            if not book:
-                continue  # already gone somehow -- nothing left to do
-            try:
-                if os.path.exists(book["filepath"]):
-                    os.remove(book["filepath"])
-            except OSError as exc:
-                failed.append((book["title"], str(exc)))
-                continue  # file is still on disk -- leave the library entry alone too
-            self.db.remove_book(book_id)
-            delete_thumbnail(book_id)
-            deleted.append(book_id)
+        deleted, failed = self._delete_books_from_disk(book_ids)
 
         dialog.close()
         self.refresh_library(show_feedback=False)
