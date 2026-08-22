@@ -4,8 +4,19 @@ favoriting a book while reading it."""
 import os
 
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
-from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QIcon,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -30,6 +41,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from .database import Database
@@ -500,18 +512,34 @@ class ReaderWindow(QMainWindow):
         self._last_selection_page_ranges = []
         self._last_selection_chars_by_page = {}
         self.highlight_color = db.get_setting("highlight_color", DEFAULT_HIGHLIGHT_COLOR)
+        self._focus_mode = False
+        self._pre_focus_bookmarks_visible = True
+        self._pre_focus_thumbnails_visible = False
 
         self._build_ui()
         self._build_bookmarks_dock()
+        self._build_thumbnail_dock()
         self.render_page()
         self.refresh_bookmarks()
         self.refresh_highlights()
 
     # ---------------- UI ----------------
+    def _as_widget_action(self, widget):
+        """Wraps an existing widget (typically a checkable QPushButton) so
+        it can be embedded directly as a menu item -- keeping the exact
+        same widget instance (and therefore every existing .setChecked()
+        call site elsewhere in this file) working unchanged, just
+        displayed inside a menu instead of the toolbar."""
+        action = QWidgetAction(self)
+        action.setDefaultWidget(widget)
+        return action
+
     def _build_ui(self):
+        menubar = self.menuBar()
         toolbar = QToolBar("Reader")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
+        self.toolbar = toolbar
 
         prev_action = QAction("\u25c0 Prev", self)
         prev_action.triggered.connect(self.prev_page)
@@ -547,6 +575,21 @@ class ReaderWindow(QMainWindow):
         toolbar.addAction(inc_action)
         self.inc_action = inc_action
 
+        toolbar.addSeparator()
+
+        self.select_text_btn = QPushButton("Select Text")
+        self.select_text_btn.setCheckable(True)
+        self.select_text_btn.clicked.connect(self.toggle_select_text_mode)
+        toolbar.addWidget(self.select_text_btn)
+
+        self.copy_feedback_label = QLabel("")
+        self.copy_feedback_label.setStyleSheet("color: #888; padding-left: 6px;")
+        toolbar.addWidget(self.copy_feedback_label)
+
+        # ---- Everything below lives in the menu bar, not the toolbar --
+        # kept as the exact same widgets/actions (same attribute names,
+        # same setChecked()/setText() call sites elsewhere in this file),
+        # just displayed in View/Book instead of crowding the toolbar. ----
         self.fit_btn = QPushButton("Fit to Screen")
         self.fit_btn.setToolTip(
             "Automatically scale each page to fit the window (pages can vary in size)"
@@ -554,7 +597,6 @@ class ReaderWindow(QMainWindow):
         self.fit_btn.setCheckable(True)
         self.fit_btn.setChecked(self.auto_fit)
         self.fit_btn.clicked.connect(self.toggle_auto_fit)
-        toolbar.addWidget(self.fit_btn)
 
         self.two_page_btn = QPushButton("Two-Page View")
         self.two_page_btn.setToolTip(
@@ -563,41 +605,24 @@ class ReaderWindow(QMainWindow):
         self.two_page_btn.setCheckable(True)
         self.two_page_btn.setChecked(self.two_page_mode)
         self.two_page_btn.clicked.connect(self.toggle_two_page_mode)
-        toolbar.addWidget(self.two_page_btn)
 
-        toolbar.addSeparator()
-
-        self.select_text_btn = QPushButton("Select Text")
-        self.select_text_btn.setCheckable(True)
-        self.select_text_btn.clicked.connect(self.toggle_select_text_mode)
-        toolbar.addWidget(self.select_text_btn)
-
-        highlight_color_btn = QPushButton("Highlight Color")
+        highlight_color_btn = QPushButton("Highlight Color...")
         highlight_color_btn.setToolTip(
             "Set the default color used for the live selection highlight and for new saved highlights"
         )
         highlight_color_btn.clicked.connect(self.choose_default_highlight_color)
-        toolbar.addWidget(highlight_color_btn)
-
-        self.copy_feedback_label = QLabel("")
-        self.copy_feedback_label.setStyleSheet("color: #888; padding-left: 6px;")
-        toolbar.addWidget(self.copy_feedback_label)
-
-        toolbar.addSeparator()
 
         self.simple_btn = QPushButton("Simple Text")
         self.simple_btn.setToolTip("Show only the extracted text of this page")
         self.simple_btn.setCheckable(True)
         self.simple_btn.setChecked(self.simple_text_mode)
         self.simple_btn.clicked.connect(self.toggle_simple_text)
-        toolbar.addWidget(self.simple_btn)
 
         self.dark_btn = QPushButton("Dark Mode")
         self.dark_btn.setToolTip("Light/dark app theme (toolbars, menus, text mode)")
         self.dark_btn.setCheckable(True)
         self.dark_btn.setChecked(self.dark_mode)
         self.dark_btn.clicked.connect(self.toggle_dark_mode)
-        toolbar.addWidget(self.dark_btn)
 
         self.dark_pages_btn = QPushButton("Dark Pages")
         self.dark_pages_btn.setToolTip(
@@ -606,27 +631,70 @@ class ReaderWindow(QMainWindow):
         self.dark_pages_btn.setCheckable(True)
         self.dark_pages_btn.setChecked(self.dark_pages)
         self.dark_pages_btn.clicked.connect(self.toggle_dark_pages)
-        toolbar.addWidget(self.dark_pages_btn)
 
-        toolbar.addSeparator()
+        # Thumbnail panel layout choice -- an exclusive pair, so picking
+        # one always un-picks the other, same as any other radio-style menu.
+        initial_orientation = self.db.get_setting("thumbnail_orientation", "vertical")
+        self.vertical_orientation_action = QAction("Vertical (Left)", self)
+        self.vertical_orientation_action.setCheckable(True)
+        self.vertical_orientation_action.setChecked(initial_orientation != "horizontal")
+        self.vertical_orientation_action.triggered.connect(lambda: self.set_thumbnail_orientation("vertical"))
+        self.horizontal_orientation_action = QAction("Horizontal (Bottom)", self)
+        self.horizontal_orientation_action.setCheckable(True)
+        self.horizontal_orientation_action.setChecked(initial_orientation == "horizontal")
+        self.horizontal_orientation_action.triggered.connect(lambda: self.set_thumbnail_orientation("horizontal"))
+        # Kept as a real attribute, not a local variable -- like the menus
+        # below, an exclusive QActionGroup with no surviving Python
+        # reference can be garbage-collected out from under its actions.
+        self._thumbnail_orientation_group = QActionGroup(self)
+        self._thumbnail_orientation_group.setExclusive(True)
+        self._thumbnail_orientation_group.addAction(self.vertical_orientation_action)
+        self._thumbnail_orientation_group.addAction(self.horizontal_orientation_action)
 
         self.fav_btn = QPushButton(self._fav_label())
         self.fav_btn.setCheckable(True)
         self.fav_btn.setChecked(bool(self.book["is_favorite"]))
         self.fav_btn.clicked.connect(self.toggle_favorite)
-        toolbar.addWidget(self.fav_btn)
 
         self.finished_btn = QPushButton(self._finished_label())
         self.finished_btn.setToolTip("Mark this book as finished / not finished")
         self.finished_btn.setCheckable(True)
         self.finished_btn.setChecked(self.book["status"] == "finished")
         self.finished_btn.clicked.connect(self.toggle_finished)
-        toolbar.addWidget(self.finished_btn)
 
         bookmark_action = QAction("+ Bookmark", self)
         bookmark_action.triggered.connect(self.add_bookmark)
-        toolbar.addAction(bookmark_action)
         self.bookmark_action = bookmark_action
+
+        self.toggle_focus_mode_action = QAction("Focus Mode (Hide All Menus)", self)
+        self.toggle_focus_mode_action.triggered.connect(self.toggle_focus_mode)
+
+        # ---- Menu bar ----
+        view_menu = menubar.addMenu("&View")
+        self._view_menu = view_menu
+        view_menu.addAction(self._as_widget_action(self.fit_btn))
+        view_menu.addAction(self._as_widget_action(self.two_page_btn))
+        view_menu.addSeparator()
+        view_menu.addAction(self._as_widget_action(self.simple_btn))
+        view_menu.addSeparator()
+        view_menu.addAction(self._as_widget_action(self.dark_btn))
+        view_menu.addAction(self._as_widget_action(self.dark_pages_btn))
+        view_menu.addSeparator()
+        view_menu.addAction(self._as_widget_action(highlight_color_btn))
+        view_menu.addSeparator()
+        thumbnail_menu = view_menu.addMenu("Thumbnail Panel Layout")
+        self._thumbnail_menu = thumbnail_menu
+        thumbnail_menu.addAction(self.vertical_orientation_action)
+        thumbnail_menu.addAction(self.horizontal_orientation_action)
+        view_menu.addSeparator()
+        view_menu.addAction(self.toggle_focus_mode_action)
+
+        book_menu = menubar.addMenu("&Book")
+        self._book_menu = book_menu
+        book_menu.addAction(self._as_widget_action(self.fav_btn))
+        book_menu.addAction(self._as_widget_action(self.finished_btn))
+        book_menu.addSeparator()
+        book_menu.addAction(self.bookmark_action)
 
         self.bookmarks_btn = QPushButton("Bookmarks/Highlights")
         self.bookmarks_btn.setToolTip("Show or hide the bookmarks and highlights panel")
@@ -634,6 +702,13 @@ class ReaderWindow(QMainWindow):
         self.bookmarks_btn.setChecked(True)  # the panel starts open
         self.bookmarks_btn.clicked.connect(self.toggle_bookmarks_dock)
         toolbar.addWidget(self.bookmarks_btn)
+
+        self.thumbnails_btn = QPushButton("Pages")
+        self.thumbnails_btn.setToolTip("Show or hide a page thumbnail panel for visual navigation")
+        self.thumbnails_btn.setCheckable(True)
+        self.thumbnails_btn.setChecked(False)  # starts hidden -- opt in, no rendering cost until you want it
+        self.thumbnails_btn.clicked.connect(self.toggle_thumbnail_dock)
+        toolbar.addWidget(self.thumbnails_btn)
 
         # Central viewing area holds both the page-image view and the plain
         # text view; only one is visible at a time depending on the mode.
@@ -698,6 +773,7 @@ class ReaderWindow(QMainWindow):
             (self.toggle_simple_text_shortcut, "reader.toggle_simple_text"),
             (self.toggle_two_page_shortcut, "reader.toggle_two_page"),
             (self.close_window_shortcut, "reader.close_window"),
+            (self.toggle_focus_mode_action, "reader.toggle_focus_mode"),
         )
         for target, action_id in bindings:
             seq = QKeySequence(effective_shortcut(action_id, overrides))
@@ -757,6 +833,197 @@ class ReaderWindow(QMainWindow):
 
     def _on_bookmarks_dock_visibility_changed(self, visible):
         self.bookmarks_btn.setChecked(visible)
+
+    # ------------- Page thumbnail / filmstrip panel -------------
+    THUMB_PANEL_SIZE = (90, 120)  # smaller than the library's cover thumbnails -- a navigation strip, not a browsing grid
+
+    def _build_thumbnail_dock(self):
+        dock = QDockWidget("Pages", self)
+        dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
+
+        self.thumbnail_list = QListWidget()
+        self.thumbnail_list.setIconSize(QSize(*self.THUMB_PANEL_SIZE))
+        self.thumbnail_list.setViewMode(QListWidget.IconMode)
+        self.thumbnail_list.setWrapping(False)
+        self.thumbnail_list.setMovement(QListWidget.Static)
+        self.thumbnail_list.setSpacing(4)
+        self.thumbnail_list.itemClicked.connect(self._on_thumbnail_clicked)
+        for i in range(self.page_count):
+            item = QListWidgetItem(str(i + 1))
+            item.setTextAlignment(Qt.AlignHCenter)
+            item.setSizeHint(QSize(self.THUMB_PANEL_SIZE[0] + 24, self.THUMB_PANEL_SIZE[1] + 28))
+            self.thumbnail_list.addItem(item)
+
+        dock.setWidget(self.thumbnail_list)
+        self.thumbnail_dock = dock
+        self.thumbnail_orientation = self.db.get_setting("thumbnail_orientation", "vertical")
+        self._apply_thumbnail_orientation(self.thumbnail_orientation, initial=True)
+        dock.hide()  # matches thumbnails_btn's unchecked starting state -- opt in, no cost until shown
+
+        dock.visibilityChanged.connect(self._on_thumbnail_dock_visibility_changed)
+
+        self._thumbnails_rendered = False
+        self._thumbnail_render_queue = []
+        self._thumbnail_render_timer = QTimer(self)
+        self._thumbnail_render_timer.setInterval(15)
+        self._thumbnail_render_timer.timeout.connect(self._render_next_thumbnail_batch)
+
+    def set_thumbnail_orientation(self, orientation):
+        """Switches the page thumbnail panel between a vertical strip on
+        the left and a horizontal filmstrip under the book -- live, with
+        the panel's open/closed state preserved across the move, and
+        remembered for next time this book (or any book) is opened."""
+        if orientation == self.thumbnail_orientation:
+            return
+        self.thumbnail_orientation = orientation
+        self.db.set_setting("thumbnail_orientation", orientation)
+        self._apply_thumbnail_orientation(orientation)
+
+    def _apply_thumbnail_orientation(self, orientation, initial=False):
+        was_visible = None if initial else self.thumbnail_dock.isVisible()
+        # QWIDGETSIZE_MAX -- Qt's own "no constraint" value, used below to
+        # clear whichever max-size limit applied to the PREVIOUS orientation.
+        no_limit = 16777215
+        if orientation == "horizontal":
+            self.thumbnail_list.setFlow(QListWidget.LeftToRight)
+            # Locking vertical scrolling off and the dock's own height to
+            # roughly one row's worth is what actually keeps this a single-
+            # row filmstrip -- without it, Qt has no reason not to leave
+            # room (and a redundant, wrong-direction scrollbar) for more
+            # rows than the LeftToRight flow will ever actually use.
+            self.thumbnail_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.thumbnail_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            thickness = self.THUMB_PANEL_SIZE[1] + 50
+            self.thumbnail_dock.setMaximumHeight(thickness)
+            self.thumbnail_dock.setMaximumWidth(no_limit)
+            self.thumbnail_list.setMaximumHeight(thickness)
+            self.thumbnail_list.setMaximumWidth(no_limit)
+            area = Qt.BottomDockWidgetArea
+            resize_orientation, resize_size = Qt.Vertical, thickness
+        else:
+            self.thumbnail_list.setFlow(QListWidget.TopToBottom)
+            self.thumbnail_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.thumbnail_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            thickness = self.THUMB_PANEL_SIZE[0] + 50
+            self.thumbnail_dock.setMaximumWidth(thickness)
+            self.thumbnail_dock.setMaximumHeight(no_limit)
+            self.thumbnail_list.setMaximumWidth(thickness)
+            self.thumbnail_list.setMaximumHeight(no_limit)
+            area = Qt.LeftDockWidgetArea
+            resize_orientation, resize_size = Qt.Horizontal, thickness
+        if not initial:
+            self.removeDockWidget(self.thumbnail_dock)
+        self.addDockWidget(area, self.thumbnail_dock)
+        self.resizeDocks([self.thumbnail_dock], [resize_size], resize_orientation)
+        if was_visible is not None:
+            self.thumbnail_dock.setVisible(was_visible)
+        if hasattr(self, "vertical_orientation_action"):
+            self.vertical_orientation_action.setChecked(orientation == "vertical")
+            self.horizontal_orientation_action.setChecked(orientation == "horizontal")
+
+    def toggle_thumbnail_dock(self, checked):
+        self.thumbnails_btn.setChecked(checked)
+        self.thumbnail_dock.setVisible(checked)
+        if checked:
+            self.thumbnail_dock.raise_()
+            self._start_thumbnail_rendering()
+            self._sync_thumbnail_selection()
+
+    def _on_thumbnail_dock_visibility_changed(self, visible):
+        self.thumbnails_btn.setChecked(visible)
+        if visible:
+            self._start_thumbnail_rendering()
+            self._sync_thumbnail_selection()
+
+    def _start_thumbnail_rendering(self):
+        """Renders every page's thumbnail once, the first time the panel is
+        actually shown -- not at reader startup, so opening a book never
+        pays this cost unless the panel is actually opened. Runs a few
+        pages at a time on a short timer rather than all at once, so even
+        a very long book doesn't freeze the UI while thumbnails are
+        generated; results stay in memory for the rest of this reader
+        session, so toggling the panel off and back on doesn't re-render
+        anything."""
+        if self._thumbnails_rendered or self.doc is None:
+            return
+        self._thumbnails_rendered = True
+        self._thumbnail_render_queue = list(range(self.page_count))
+        self._thumbnail_render_timer.start()
+
+    def _render_next_thumbnail_batch(self, batch_size=3):
+        if not self._thumbnail_render_queue:
+            self._thumbnail_render_timer.stop()
+            return
+        for _ in range(batch_size):
+            if not self._thumbnail_render_queue:
+                break
+            page_idx = self._thumbnail_render_queue.pop(0)
+            icon = self._render_thumbnail_icon(page_idx)
+            item = self.thumbnail_list.item(page_idx)
+            if icon is not None and item is not None:
+                item.setIcon(icon)
+
+    def _render_thumbnail_icon(self, page_idx):
+        try:
+            page = self.doc[page_idx]
+            rect = page.rect
+            if rect.width <= 0 or rect.height <= 0:
+                return None
+            scale = min(self.THUMB_PANEL_SIZE[0] / rect.width, self.THUMB_PANEL_SIZE[1] / rect.height)
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
+            fmt = QImage.Format_RGB888 if pix.n < 4 else QImage.Format_RGBA8888
+            image = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt)
+            return QIcon(QPixmap.fromImage(image.copy()))
+        except Exception:
+            return None
+
+    def _on_thumbnail_clicked(self, item):
+        self.jump_to_page(self.thumbnail_list.row(item) + 1)
+
+    def _sync_thumbnail_selection(self):
+        """Highlights and scrolls to whichever page is now current --
+        called every time render_page() runs, but a cheap no-op if the
+        panel doesn't exist yet or has never been shown."""
+        if not hasattr(self, "thumbnail_list") or not self.thumbnail_dock.isVisible():
+            return
+        target = self._pair_start(self.current_page) if self.two_page_mode else self.current_page
+        item = self.thumbnail_list.item(target)
+        if item is None:
+            return
+        self.thumbnail_list.blockSignals(True)
+        self.thumbnail_list.setCurrentItem(item)
+        self.thumbnail_list.blockSignals(False)
+        self.thumbnail_list.scrollToItem(item)
+
+    # ------------- Focus mode (hide all menus, like F11 in a browser) -------------
+    def toggle_focus_mode(self):
+        if self._focus_mode:
+            self._exit_focus_mode()
+        else:
+            self._enter_focus_mode()
+
+    def _enter_focus_mode(self):
+        if self._focus_mode:
+            return
+        self._focus_mode = True
+        # Remember exactly what was open so exiting restores it precisely,
+        # rather than always reopening both panels (or leaving them however
+        # they happened to end up) regardless of what you actually had.
+        self._pre_focus_bookmarks_visible = self.bookmarks_dock.isVisible()
+        self._pre_focus_thumbnails_visible = self.thumbnail_dock.isVisible()
+        self.toolbar.hide()
+        self.bookmarks_dock.hide()
+        self.thumbnail_dock.hide()
+        self.showFullScreen()
+
+    def _exit_focus_mode(self):
+        if not self._focus_mode:
+            return
+        self._focus_mode = False
+        self.showNormal()
+        self.toolbar.show()
+        self.bookmarks_dock.setVisible(self._pre_focus_bookmarks_visible)
+        self.thumbnail_dock.setVisible(self._pre_focus_thumbnails_visible)
 
     def _fav_label(self):
         return "\u2605 Favorited" if self.book["is_favorite"] else "\u2606 Favorite"
@@ -849,6 +1116,7 @@ class ReaderWindow(QMainWindow):
         self.page_spin.setValue(self.current_page + 1)
         self.page_spin.blockSignals(False)
         self.db.update_progress(self.book_id, self.current_page)
+        self._sync_thumbnail_selection()
 
     def _render_single_page(self):
         page = self.doc[self.current_page]
@@ -955,6 +1223,13 @@ class ReaderWindow(QMainWindow):
             return
         if event.matches(QKeySequence.SelectAll) and self.select_text_mode and not self.simple_text_mode:
             self.select_all_text()
+            event.accept()
+            return
+        if self._focus_mode and event.key() == Qt.Key_Escape:
+            # Standard convention (browsers do the same for fullscreen) --
+            # works alongside F11/whatever toggle_focus_mode is bound to,
+            # not instead of it.
+            self._exit_focus_mode()
             event.accept()
             return
         super().keyPressEvent(event)

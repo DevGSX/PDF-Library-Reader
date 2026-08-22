@@ -38,6 +38,7 @@ CATALOG = {
     "reader.toggle_simple_text": ("Toggle Simple Text Mode", "", "reader"),
     "reader.toggle_two_page": ("Toggle Two-Page View", "", "reader"),
     "reader.close_window": ("Close Reader Window", "Ctrl+W", "reader"),
+    "reader.toggle_focus_mode": ("Toggle Focus Mode (Hide All Menus)", "F11", "reader"),
 }
 
 

@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from .add_to_category_dialog import AddToCategoryDialog
@@ -126,6 +127,7 @@ class LibraryWindow(QMainWindow):
         self._search_dialog = None
         self._details_dialog = None
         self._letter_headers = {}  # letter -> header QLabel, populated by _render_grid
+        self._list_letter_headers = {}  # letter -> header QListWidgetItem, populated by _render_list
         self.selected_category_id = None  # None = "All Books" (no category filter)
         self._selected_book_ids = set()  # multi-selection for bulk actions
         self._last_clicked_book_id = None  # anchor for Shift+click range selection
@@ -148,17 +150,36 @@ class LibraryWindow(QMainWindow):
         self.refresh_library(show_feedback=False)  # initial startup check: also syncs missing files
 
     # ---------------- UI ----------------
+    def _as_widget_action(self, widget):
+        """Wraps an existing widget (typically a checkable QPushButton) so
+        it can be embedded directly as a menu item -- keeping the exact
+        same widget instance (and therefore every existing .setChecked()
+        call site elsewhere in this file) working unchanged, just
+        displayed inside a menu instead of the toolbar."""
+        action = QWidgetAction(self)
+        action.setDefaultWidget(widget)
+        return action
+
     def _build_ui(self):
+        menubar = self.menuBar()
         toolbar = QToolBar("Main")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        add_action = QAction("Add Book(s)", self)
+        # ---- Actions and toggle buttons (created once; placed into the
+        # toolbar and/or menu bar below -- a QAction can live in both at
+        # once and stays in sync automatically, so anything genuinely
+        # frequent (adding books, refreshing, switching view) gets a
+        # toolbar shortcut without losing menu-bar discoverability; a
+        # QPushButton toggle can only be *shown* in one place, so those
+        # sit wherever makes most sense and keep exactly the same
+        # attribute name and setChecked() call sites as before. ----
+        add_action = QAction("Add Book(s)...", self)
         add_action.triggered.connect(self.add_books)
         toolbar.addAction(add_action)
         self.add_books_action = add_action
 
-        add_folder_action = QAction("Add Folder", self)
+        add_folder_action = QAction("Add Folder...", self)
         add_folder_action.triggered.connect(self.add_folder)
         toolbar.addAction(add_folder_action)
         self.add_folder_action = add_folder_action
@@ -169,20 +190,17 @@ class LibraryWindow(QMainWindow):
             "books into, so your whole library lives in one place"
         )
         library_folder_action.triggered.connect(self.choose_library_folder)
-        toolbar.addAction(library_folder_action)
 
         toolbar.addSeparator()
 
-        self.all_btn = QPushButton("All Books")
-        self.all_btn.setCheckable(True)
-        self.all_btn.setChecked(True)
-        self.all_btn.clicked.connect(lambda: self.set_favorites_filter(False))
-        toolbar.addWidget(self.all_btn)
-
-        self.fav_btn = QPushButton("\u2605 Favorites")
-        self.fav_btn.setCheckable(True)
-        self.fav_btn.clicked.connect(lambda: self.set_favorites_filter(True))
-        toolbar.addWidget(self.fav_btn)
+        self.select_mode_btn = QPushButton("Select")
+        self.select_mode_btn.setCheckable(True)
+        self.select_mode_btn.setToolTip(
+            "Turn on to click books and select them for bulk actions "
+            "(add to a category, remove several at once)"
+        )
+        self.select_mode_btn.clicked.connect(self.toggle_select_mode)
+        toolbar.addWidget(self.select_mode_btn)
 
         toolbar.addSeparator()
 
@@ -200,28 +218,7 @@ class LibraryWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        self.select_mode_btn = QPushButton("Select")
-        self.select_mode_btn.setCheckable(True)
-        self.select_mode_btn.setToolTip(
-            "Turn on to click books and select them for bulk actions "
-            "(add to a category, remove several at once)"
-        )
-        self.select_mode_btn.clicked.connect(self.toggle_select_mode)
-        toolbar.addWidget(self.select_mode_btn)
-
-        toolbar.addSeparator()
-
-        self.genre_lang_filter_btn = QPushButton("Genres, Languages && Series")
-        self.genre_lang_filter_btn.setCheckable(True)
-        self.genre_lang_filter_btn.setToolTip(
-            "Show a Genre/Language/Series filter bar below the A-Z index (Image Preview)"
-        )
-        self.genre_lang_filter_btn.clicked.connect(self.toggle_genre_lang_filter_mode)
-        toolbar.addWidget(self.genre_lang_filter_btn)
-
-        toolbar.addSeparator()
-
-        self.refresh_action = QAction("Refresh", self)
+        self.refresh_action = QAction("Refresh Library", self)
         self.refresh_action.setToolTip(
             "Refresh the library -- re-checks for files that were renamed "
             "or deleted outside the app"
@@ -229,9 +226,44 @@ class LibraryWindow(QMainWindow):
         self.refresh_action.triggered.connect(lambda: self.refresh_library())
         toolbar.addAction(self.refresh_action)
 
-        toolbar.addSeparator()
+        # Push the settings gear all the way to the toolbar's far right edge.
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
 
-        export_menu = QMenu(self)
+        self.shortcuts_action = QAction("\u2699", self)  # gear glyph -- no icon assets elsewhere in the app to match
+        self.shortcuts_action.setToolTip("Keyboard Shortcuts...")
+        self.shortcuts_action.triggered.connect(self.open_shortcuts_dialog)
+        toolbar.addAction(self.shortcuts_action)
+
+        # ---- Toggle buttons that live in the View menu, not the toolbar ----
+        self.all_btn = QPushButton("All Books")
+        self.all_btn.setCheckable(True)
+        self.all_btn.setChecked(True)
+        self.all_btn.clicked.connect(lambda: self.set_favorites_filter(False))
+
+        self.fav_btn = QPushButton("\u2605 Favorites")
+        self.fav_btn.setCheckable(True)
+        self.fav_btn.clicked.connect(lambda: self.set_favorites_filter(True))
+
+        self.genre_lang_filter_btn = QPushButton("Genres, Languages && Series")
+        self.genre_lang_filter_btn.setCheckable(True)
+        self.genre_lang_filter_btn.setToolTip(
+            "Show a Genre/Language/Series filter bar below the A-Z index"
+        )
+        self.genre_lang_filter_btn.clicked.connect(self.toggle_genre_lang_filter_mode)
+
+        self.theme_btn = QPushButton("Dark Mode")
+        self.theme_btn.setCheckable(True)
+        self.theme_btn.clicked.connect(self.toggle_theme)
+
+        # ---- Export submenu (also used verbatim inside the File menu) ----
+        # Kept as a real attribute, not a local variable -- PySide6 can
+        # garbage-collect a QMenu whose only reference is local even after
+        # addMenu() reparents it at the C++ level, which would crash the
+        # app the moment someone actually opened File > Export.
+        export_menu = QMenu("Export", self)
+        self._export_menu = export_menu
         export_menu.addAction(
             "Share Full Archive (PDFs + Categories + Bookmarks)..."
         ).triggered.connect(self.export_share_full_archive)
@@ -248,16 +280,6 @@ class LibraryWindow(QMainWindow):
         export_menu.addSeparator()
         export_menu.addAction("Categories Only...").triggered.connect(self.export_library)
         export_menu.addAction("Bookmarks Only...").triggered.connect(self.export_bookmarks_only)
-        export_button = QToolButton()
-        export_button.setText("Export...")
-        export_button.setPopupMode(QToolButton.InstantPopup)
-        export_button.setMenu(export_menu)
-        export_button.setToolTip(
-            "Back up your library (or just a selection, its categories, or "
-            "its bookmarks) to a file you can carry to another device or "
-            "send to someone else"
-        )
-        toolbar.addWidget(export_button)
 
         import_action = QAction("Import...", self)
         import_action.setToolTip(
@@ -266,32 +288,39 @@ class LibraryWindow(QMainWindow):
             "import is detected automatically from the file you pick."
         )
         import_action.triggered.connect(self.import_file)
-        toolbar.addAction(import_action)
         self.import_action = import_action
 
-        toolbar.addSeparator()
-
-        search_text_action = QAction("Search Text", self)
+        search_text_action = QAction("Search Text...", self)
         search_text_action.setToolTip("Search for text inside all your books")
         search_text_action.triggered.connect(self.open_text_search)
-        toolbar.addAction(search_text_action)
 
-        toolbar.addSeparator()
+        # ---- Menu bar: everything above, organized by purpose, so
+        # nothing is more than two clicks away even after trimming the
+        # toolbar down to just the handful of actions used constantly ----
+        file_menu = menubar.addMenu("&File")
+        self._file_menu = file_menu
+        file_menu.addAction(add_action)
+        file_menu.addAction(add_folder_action)
+        file_menu.addAction(library_folder_action)
+        file_menu.addSeparator()
+        file_menu.addAction(import_action)
+        file_menu.addMenu(export_menu)
 
-        self.theme_btn = QPushButton("Dark Mode")
-        self.theme_btn.setCheckable(True)
-        self.theme_btn.clicked.connect(self.toggle_theme)
-        toolbar.addWidget(self.theme_btn)
+        view_menu = menubar.addMenu("&View")
+        self._view_menu = view_menu
+        view_menu.addAction(self._as_widget_action(self.all_btn))
+        view_menu.addAction(self._as_widget_action(self.fav_btn))
+        view_menu.addSeparator()
+        view_menu.addAction(self._as_widget_action(self.genre_lang_filter_btn))
+        view_menu.addSeparator()
+        view_menu.addAction(self._as_widget_action(self.theme_btn))
 
-        # Push the settings gear all the way to the toolbar's far right edge.
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        toolbar.addWidget(spacer)
-
-        self.shortcuts_action = QAction("\u2699", self)  # gear glyph -- no icon assets elsewhere in the app to match
-        self.shortcuts_action.setToolTip("Keyboard Shortcuts...")
-        self.shortcuts_action.triggered.connect(self.open_shortcuts_dialog)
-        toolbar.addAction(self.shortcuts_action)
+        tools_menu = menubar.addMenu("&Tools")
+        self._tools_menu = tools_menu
+        tools_menu.addAction(search_text_action)
+        tools_menu.addAction(self.refresh_action)
+        tools_menu.addSeparator()
+        tools_menu.addAction(self.shortcuts_action)
 
         # A few actions are keyboard-only -- no toolbar button of their own,
         # but still customizable like everything else in the catalog.
@@ -424,26 +453,31 @@ class LibraryWindow(QMainWindow):
         layout.addWidget(self.suggestion_panel)
         self.suggestion_panel.hide()
 
+        # A-Z index and the Genre/Language/Series filter bar sit above BOTH
+        # the list and grid views (not nested inside either one), so they
+        # stay available regardless of which view you're browsing in --
+        # they used to live only inside the grid container, which meant
+        # they silently vanished whenever Simple Text (list) view was
+        # active, since that container was hidden outright.
+        self.alpha_bar_top, self._alpha_buttons_top = self._build_alpha_bar()
+        self.alpha_bar_top.hide()
+        layout.addWidget(self.alpha_bar_top)
+
+        self.genre_lang_bar = self._build_genre_lang_bar()
+        self.genre_lang_bar.hide()
+        layout.addWidget(self.genre_lang_bar)
+
         # "Simple Text" view: a detailed list of BookCard rows.
         self.list_widget = QListWidget()
         self.list_widget.setSpacing(4)
         layout.addWidget(self.list_widget)
 
         # "Image Preview" view: a scrollable, wrapping grid of cover thumbnails,
-        # grouped under a letter header when sorted alphabetically, with a
-        # clickable A-Z index strip pinned above the grid.
+        # grouped under a letter header when sorted alphabetically.
         self.grid_container = QWidget()
         grid_col = QVBoxLayout(self.grid_container)
         grid_col.setContentsMargins(0, 0, 0, 0)
         grid_col.setSpacing(4)
-
-        self.alpha_bar_top, self._alpha_buttons_top = self._build_alpha_bar()
-        self.alpha_bar_top.hide()
-        grid_col.addWidget(self.alpha_bar_top)
-
-        self.genre_lang_bar = self._build_genre_lang_bar()
-        self.genre_lang_bar.hide()
-        grid_col.addWidget(self.genre_lang_bar)
 
         self.grid_scroll = QScrollArea()
         self.grid_scroll.setWidgetResizable(True)
@@ -2298,6 +2332,13 @@ class LibraryWindow(QMainWindow):
         sort_by, descending = SORT_OPTIONS[self.sort_combo.currentIndex()]
         search = self.search_box.text().strip() or None
         status_filter = self.status_filter_combo.currentData()
+
+        # The A-Z index (only meaningful under Title sort) and the
+        # Genre/Language filter bar are shared across both view modes, so
+        # they behave identically whichever one you're browsing in.
+        self.alpha_bar_top.setVisible(sort_by == "title")
+        self.genre_lang_bar.setVisible(self.genre_lang_filter_mode)
+
         all_books = self.db.get_books(
             favorites_only=self.show_favorites_only,
             search=search,
@@ -2362,7 +2403,7 @@ class LibraryWindow(QMainWindow):
         if self.view_mode == "grid":
             self._render_grid(books, sort_by)
         else:
-            self._render_list(books)
+            self._render_list(books, sort_by)
 
         # Synchronous, not deferred: both QListWidget and the grid's
         # scrollbar range are already correct immediately after rebuilding,
@@ -2490,9 +2531,12 @@ class LibraryWindow(QMainWindow):
         self._reset_page_and_refresh()
 
     # ------------- Simple Text (list) view -------------
-    def _render_list(self, books):
+    def _render_list(self, books, sort_by):
         self.list_widget.clear()
-        for book in books:
+        self._list_letter_headers = {}
+        is_alpha_sort = sort_by == "title"
+
+        def add_book_item(book):
             item = QListWidgetItem()
             card = BookCard(
                 book,
@@ -2510,6 +2554,28 @@ class LibraryWindow(QMainWindow):
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, card)
 
+        if is_alpha_sort and books:
+            # Same grouped-header idea as Image Preview's A-Z groups, so the
+            # alpha bar's jump-to-letter behaves identically in both views.
+            self._update_alpha_bars(set(self._letter_page_map.keys()))
+            groups = OrderedDict()
+            for book in books:
+                groups.setdefault(_group_letter(book["title"]), []).append(book)
+            for letter, group_books in groups.items():
+                header_item = QListWidgetItem(letter)
+                header_item.setFlags(Qt.NoItemFlags)  # a label, not a selectable/clickable row
+                header_font = header_item.font()
+                header_font.setBold(True)
+                header_font.setPointSize(header_font.pointSize() + 1)
+                header_item.setFont(header_font)
+                self.list_widget.addItem(header_item)
+                self._list_letter_headers[letter] = header_item
+                for book in group_books:
+                    add_book_item(book)
+        else:
+            for book in books:
+                add_book_item(book)
+
     # ------------- Image Preview (grid) view -------------
     def _render_grid(self, books, sort_by):
         content = QWidget()
@@ -2520,12 +2586,6 @@ class LibraryWindow(QMainWindow):
         self._letter_headers = {}
         is_alpha_sort = sort_by == "title"
         is_series_sort = sort_by == "series_order"
-        # Both bars can show at once now -- the A-Z index (only meaningful
-        # under Title sort) stays on top, with the Genre/Language filter bar
-        # underneath it when that's turned on, so a large library sorted
-        # alphabetically can still be narrowed by genre/language too.
-        self.alpha_bar_top.setVisible(is_alpha_sort)
-        self.genre_lang_bar.setVisible(self.genre_lang_filter_mode)
 
         if is_alpha_sort:
             # Enabled letters reflect the FULL filtered set (every page), not
@@ -2575,7 +2635,8 @@ class LibraryWindow(QMainWindow):
             self._alpha_buttons_top[letter].setEnabled(letter in active_letters)
 
     def _jump_to_letter(self, letter):
-        if letter in self._letter_headers:
+        headers = self._list_letter_headers if self.view_mode == "list" else self._letter_headers
+        if letter in headers:
             # Already visible on the current page (this also correctly
             # handles a letter group that spans multiple pages: if we're on
             # a later page that still shows this letter, no need to jump
@@ -2593,9 +2654,14 @@ class LibraryWindow(QMainWindow):
             self._scroll_to_letter_header(letter)
 
     def _scroll_to_letter_header(self, letter):
-        header = self._letter_headers.get(letter)
-        if header is not None:
-            self.grid_scroll.verticalScrollBar().setValue(header.y())
+        if self.view_mode == "list":
+            item = self._list_letter_headers.get(letter)
+            if item is not None:
+                self.list_widget.scrollToItem(item, QAbstractItemView.PositionAtTop)
+        else:
+            header = self._letter_headers.get(letter)
+            if header is not None:
+                self.grid_scroll.verticalScrollBar().setValue(header.y())
 
     def _build_cover_group(self, books):
         group_widget = QWidget()
