@@ -1610,17 +1610,51 @@ class LibraryWindow(QMainWindow):
             deleted.append(book_id)
         return deleted, failed
 
+    def _confirm_delete_dialog(self, books):
+        """A confirmation dialog listing exactly which book(s) are about to
+        be permanently deleted -- not just a count -- so there's no doubt
+        about what you're confirming before it happens. Returns True only
+        if "Yes" was actually clicked; "No" is the keyboard-default (Enter
+        triggers it, not the destructive action), since this can't be
+        undone and a stray Enter shouldn't be the thing that deletes
+        something."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Delete from Disk")
+        dialog.resize(420, 320)
+        layout = QVBoxLayout(dialog)
+
+        n = len(books)
+        label = QLabel(
+            f"Permanently delete the following {n} book{'s' if n != 1 else ''} "
+            f"from disk?\n\nThis cannot be undone."
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        list_widget = QListWidget()
+        list_widget.setSelectionMode(QAbstractItemView.NoSelection)
+        for book in books:
+            list_widget.addItem(book["title"])
+        layout.addWidget(list_widget)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        no_btn = QPushButton("No")
+        no_btn.setDefault(True)
+        no_btn.clicked.connect(dialog.reject)
+        btn_row.addWidget(no_btn)
+        yes_btn = QPushButton("Yes")
+        yes_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(yes_btn)
+        layout.addLayout(btn_row)
+
+        return dialog.exec() == QDialog.Accepted
+
     def delete_book_from_disk(self, book_id):
         book = self.db.get_book(book_id)
         if not book:
             return
-        reply = QMessageBox.question(
-            self,
-            "Delete from disk",
-            f"Permanently delete \u201c{book['title']}\u201d's PDF file from disk, "
-            f"and remove it from your library?\n\nThis cannot be undone.",
-        )
-        if reply != QMessageBox.Yes:
+        if not self._confirm_delete_dialog([book]):
             return
         deleted, failed = self._delete_books_from_disk([book_id])
         self._update_selection_indicator()
@@ -1638,13 +1672,10 @@ class LibraryWindow(QMainWindow):
 
     def _bulk_delete_books_from_disk(self, book_ids):
         book_ids = list(book_ids)
-        reply = QMessageBox.question(
-            self,
-            "Delete from disk",
-            f"Permanently delete {len(book_ids)} selected book(s)' PDF file(s) "
-            f"from disk, and remove them from your library?\n\nThis cannot be undone.",
-        )
-        if reply != QMessageBox.Yes:
+        books = [b for b in (self.db.get_book(bid) for bid in book_ids) if b]
+        if not books:
+            return
+        if not self._confirm_delete_dialog(books):
             return
         deleted, failed = self._delete_books_from_disk(book_ids)
         self._update_selection_indicator()
@@ -2257,14 +2288,10 @@ class LibraryWindow(QMainWindow):
             )
             return
 
-        reply = QMessageBox.question(
-            self,
-            "Delete selected duplicates",
-            f"Permanently delete {len(book_ids)} selected book(s)' PDF file(s) "
-            f"from disk, and remove them from your library?\n\n"
-            f"This cannot be undone.",
+        reply = self._confirm_delete_dialog(
+            [b for b in (self.db.get_book(bid) for bid in book_ids) if b]
         )
-        if reply != QMessageBox.Yes:
+        if not reply:
             return
 
         deleted, failed = self._delete_books_from_disk(book_ids)

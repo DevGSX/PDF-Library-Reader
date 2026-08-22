@@ -274,7 +274,7 @@ class TextSelectionOverlay(QWidget):
         # stored color and style, so the just-finished selection (drawn
         # last, below) is never visually lost underneath one it overlaps.
         for h in self._saved_highlights:
-            self._paint_highlight(painter, h["rects"], QColor(h["color"]), h.get("style", "fill"))
+            self._paint_highlight(painter, h["rects"], h["color"], h.get("accent_color") or h["color"], h.get("style", "fill"))
         painter.setPen(Qt.NoPen)
         painter.setBrush(self._live_color)
         for r in self._highlight_rects:
@@ -282,16 +282,16 @@ class TextSelectionOverlay(QWidget):
         painter.end()
 
     @staticmethod
-    def _paint_highlight(painter, rects, color, style):
+    def _paint_highlight(painter, rects, fill_color, accent_color, style):
         if style in ("fill", "fill_underline", "fill_strikethrough"):
-            fill_color = QColor(color)
-            fill_color.setAlpha(110)
+            fill = QColor(fill_color)
+            fill.setAlpha(110)
             painter.setPen(Qt.NoPen)
-            painter.setBrush(fill_color)
+            painter.setBrush(fill)
             for r in rects:
                 painter.drawRect(r)
         if style in ("underline", "fill_underline"):
-            pen_color = QColor(color)
+            pen_color = QColor(accent_color)
             pen_color.setAlpha(220)
             painter.setPen(QPen(pen_color, 2))
             painter.setBrush(Qt.NoBrush)
@@ -299,7 +299,7 @@ class TextSelectionOverlay(QWidget):
                 y = r.bottom() - 1
                 painter.drawLine(r.left(), y, r.right(), y)
         if style in ("strikethrough", "fill_strikethrough"):
-            pen_color = QColor(color)
+            pen_color = QColor(accent_color)
             pen_color.setAlpha(220)
             painter.setPen(QPen(pen_color, 2))
             painter.setBrush(Qt.NoBrush)
@@ -362,19 +362,20 @@ class SelectionPopup(QWidget):
 
 
 class HighlightDialog(QDialog):
-    """Prompts for a highlight's name, color, and style -- used both when
-    saving a brand new highlight and when editing an existing one. The
-    color swatch always starts on whatever color was already chosen (the
-    current default when saving new, or the highlight's own color when
-    editing), and "Choose Color..." opens the full picker (basic swatches,
-    a spectrum/wheel, and exact RGB/HSV/hex entry) to change it -- letting
-    someone highlight different passages in different colors of their own
-    choosing, one save at a time. Style picks between a solid highlighter
-    fill, an underline, or a strikethrough, matching the distinct
-    annotation tools a real PDF editor offers rather than just one look.
-    When editing an existing highlight, text_preview shows what was
-    actually highlighted, read-only, so it's easy to tell highlights
-    apart without having to jump to the page."""
+    """Prompts for a highlight's name, color, style, and (when the style
+    involves a line -- underline, strikethrough, or one of the combined
+    styles) a separate accent color for that line, independent of the
+    fill color. The fill color swatch starts on whatever color was
+    already chosen (the most recently used color when saving new, or the
+    highlight's own color when editing), and "Choose Color..." opens the
+    full picker (basic swatches, a spectrum/wheel, and exact RGB/HSV/hex
+    entry) to change it -- letting someone highlight different passages
+    in different colors of their own choosing, one save at a time. The
+    accent color row only appears for styles that actually have a line to
+    color, and defaults to matching the fill color until changed. When
+    editing an existing highlight, text_preview shows what was actually
+    highlighted, read-only, so it's easy to tell highlights apart without
+    having to jump to the page."""
 
     STYLES = [
         ("fill", "Highlight (fill)"),
@@ -384,35 +385,52 @@ class HighlightDialog(QDialog):
         ("fill_strikethrough", "Highlight + Strikethrough"),
     ]
 
-    def __init__(self, title, initial_name, initial_color, initial_style="fill", text_preview=None, parent=None):
+    def __init__(
+        self, title, initial_name, initial_color, initial_accent_color=None,
+        initial_style="fill", text_preview=None, parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle(title)
         self._color = QColor(initial_color)
+        self._accent_color = QColor(initial_accent_color or initial_color)
 
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        self.form = QFormLayout()
         self.name_edit = QLineEdit(initial_name or "")
         self.name_edit.setPlaceholderText("Leave blank to use the page number")
-        form.addRow("Name", self.name_edit)
+        self.form.addRow("Name", self.name_edit)
 
         color_row = QHBoxLayout()
         self.color_swatch = QLabel()
         self.color_swatch.setFixedSize(22, 22)
-        self._update_swatch()
+        self._update_swatch(self.color_swatch, self._color)
         color_row.addWidget(self.color_swatch)
         choose_btn = QPushButton("Choose Color...")
         choose_btn.clicked.connect(self._choose_color)
         color_row.addWidget(choose_btn)
         color_row.addStretch()
-        form.addRow("Color", color_row)
+        self.form.addRow("Color", color_row)
+
+        accent_row = QHBoxLayout()
+        self.accent_swatch = QLabel()
+        self.accent_swatch.setFixedSize(22, 22)
+        self._update_swatch(self.accent_swatch, self._accent_color)
+        accent_row.addWidget(self.accent_swatch)
+        accent_choose_btn = QPushButton("Choose Color...")
+        accent_choose_btn.clicked.connect(self._choose_accent_color)
+        accent_row.addWidget(accent_choose_btn)
+        accent_row.addStretch()
+        self.form.addRow("Underline/Strikethrough Color", accent_row)
 
         self.style_combo = QComboBox()
         for value, label in self.STYLES:
             self.style_combo.addItem(label, value)
         idx = self.style_combo.findData(initial_style)
         self.style_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        form.addRow("Style", self.style_combo)
-        layout.addLayout(form)
+        self.style_combo.currentIndexChanged.connect(self._update_accent_row_visibility)
+        self.form.addRow("Style", self.style_combo)
+        layout.addLayout(self.form)
+        self._update_accent_row_visibility()
 
         if text_preview is not None:
             preview_label = QLabel("Highlighted text:")
@@ -434,20 +452,32 @@ class HighlightDialog(QDialog):
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
 
-    def _update_swatch(self):
-        self.color_swatch.setStyleSheet(
-            f"background-color: {self._color.name()}; border: 1px solid palette(mid);"
+    def _update_accent_row_visibility(self):
+        needs_accent = self.style_combo.currentData() != "fill"
+        self.form.setRowVisible(2, needs_accent)  # row 2 = "Underline/Strikethrough Color"
+
+    @staticmethod
+    def _update_swatch(swatch_label, color):
+        swatch_label.setStyleSheet(
+            f"background-color: {color.name()}; border: 1px solid palette(mid);"
         )
 
     def _choose_color(self):
         color = QColorDialog.getColor(self._color, self, "Choose Highlight Color")
         if color.isValid():
             self._color = color
-            self._update_swatch()
+            self._update_swatch(self.color_swatch, self._color)
+
+    def _choose_accent_color(self):
+        color = QColorDialog.getColor(self._accent_color, self, "Choose Underline/Strikethrough Color")
+        if color.isValid():
+            self._accent_color = color
+            self._update_swatch(self.accent_swatch, self._accent_color)
 
     def result_values(self):
-        """(name, QColor, style) -- call only after exec() returns QDialog.Accepted."""
-        return self.name_edit.text().strip(), self._color, self.style_combo.currentData()
+        """(name, fill_color, accent_color, style) -- call only after
+        exec() returns QDialog.Accepted."""
+        return self.name_edit.text().strip(), self._color, self._accent_color, self.style_combo.currentData()
 
 
 class ReaderWindow(QMainWindow):
@@ -512,6 +542,14 @@ class ReaderWindow(QMainWindow):
         self._last_selection_page_ranges = []
         self._last_selection_chars_by_page = {}
         self.highlight_color = db.get_setting("highlight_color", DEFAULT_HIGHLIGHT_COLOR)
+        # The color/accent a NEW highlight's dialog starts from -- updated
+        # every time a highlight is actually saved or edited with a
+        # particular color, so highlighting several passages in one color
+        # doesn't mean re-picking it every single time. Distinct from
+        # highlight_color above, which only changes via the toolbar's
+        # explicit "Highlight Color" default-setting button.
+        self.last_highlight_color = db.get_setting("last_highlight_color", self.highlight_color)
+        self.last_highlight_accent_color = db.get_setting("last_highlight_accent_color", self.last_highlight_color)
         self._focus_mode = False
         self._pre_focus_bookmarks_visible = True
         self._pre_focus_thumbnails_visible = False
@@ -666,6 +704,11 @@ class ReaderWindow(QMainWindow):
         bookmark_action.triggered.connect(self.add_bookmark)
         self.bookmark_action = bookmark_action
 
+        self.next_highlight_action = QAction("Jump to Next Highlight", self)
+        self.next_highlight_action.triggered.connect(self.jump_to_next_highlight)
+        self.prev_highlight_action = QAction("Jump to Previous Highlight", self)
+        self.prev_highlight_action.triggered.connect(self.jump_to_prev_highlight)
+
         self.toggle_focus_mode_action = QAction("Focus Mode (Hide All Menus)", self)
         self.toggle_focus_mode_action.triggered.connect(self.toggle_focus_mode)
 
@@ -695,6 +738,9 @@ class ReaderWindow(QMainWindow):
         book_menu.addAction(self._as_widget_action(self.finished_btn))
         book_menu.addSeparator()
         book_menu.addAction(self.bookmark_action)
+        book_menu.addSeparator()
+        book_menu.addAction(self.next_highlight_action)
+        book_menu.addAction(self.prev_highlight_action)
 
         self.bookmarks_btn = QPushButton("Bookmarks/Highlights")
         self.bookmarks_btn.setToolTip("Show or hide the bookmarks and highlights panel")
@@ -774,6 +820,8 @@ class ReaderWindow(QMainWindow):
             (self.toggle_two_page_shortcut, "reader.toggle_two_page"),
             (self.close_window_shortcut, "reader.close_window"),
             (self.toggle_focus_mode_action, "reader.toggle_focus_mode"),
+            (self.next_highlight_action, "reader.next_highlight"),
+            (self.prev_highlight_action, "reader.prev_highlight"),
         )
         for target, action_id in bindings:
             seq = QKeySequence(effective_shortcut(action_id, overrides))
@@ -1522,6 +1570,7 @@ class ReaderWindow(QMainWindow):
                 ]
                 overlay_highlights.append({
                     "id": h["id"], "color": QColor(h["color"]), "rects": rects,
+                    "accent_color": QColor(h.get("accent_color") or h["color"]),
                     "style": h.get("style") or "fill",
                 })
         self.text_overlay.set_saved_highlights(overlay_highlights)
@@ -1545,10 +1594,13 @@ class ReaderWindow(QMainWindow):
     def save_selection_as_highlight(self):
         if not self.selected_text or not self._last_selection_page_ranges:
             return
-        dialog = HighlightDialog("Save Highlight", "", self.highlight_color, parent=self)
+        dialog = HighlightDialog(
+            "Save Highlight", "", self.last_highlight_color,
+            initial_accent_color=self.last_highlight_accent_color, parent=self,
+        )
         if dialog.exec() != QDialog.Accepted:
             return
-        custom_name, color, style = dialog.result_values()
+        custom_name, color, accent_color, style = dialog.result_values()
         chars_by_page = self._last_selection_chars_by_page
         for (page_idx, s, e) in self._last_selection_page_ranges:
             chars = chars_by_page.get(page_idx)
@@ -1558,13 +1610,21 @@ class ReaderWindow(QMainWindow):
             text = selected_text_for_range(chars, s, e)
             label = custom_name or self._default_highlight_label(page_idx)
             self.db.add_highlight(
-                self.book_id, page_idx, color.name(), rects, text=text, label=label, style=style
+                self.book_id, page_idx, color.name(), rects, text=text, label=label,
+                style=style, accent_color=accent_color.name(),
             )
+        self._remember_last_highlight_colors(color, accent_color)
         self.selected_text = ""
         self.text_overlay.set_highlight_rects([])
         self.selection_popup.hide()
         self._load_saved_highlights_for_current_view()
         self.refresh_highlights()
+
+    def _remember_last_highlight_colors(self, color, accent_color):
+        self.last_highlight_color = color.name()
+        self.last_highlight_accent_color = accent_color.name()
+        self.db.set_setting("last_highlight_color", self.last_highlight_color)
+        self.db.set_setting("last_highlight_accent_color", self.last_highlight_accent_color)
 
     def _default_highlight_label(self, page_idx):
         """"Page N" for the first highlight on a page when the user
@@ -1587,15 +1647,18 @@ class ReaderWindow(QMainWindow):
             return
         dialog = HighlightDialog(
             "Edit Highlight", highlight["label"], highlight["color"],
+            initial_accent_color=highlight.get("accent_color") or highlight["color"],
             initial_style=highlight.get("style") or "fill", text_preview=highlight["text"], parent=self,
         )
         if dialog.exec() != QDialog.Accepted:
             return
-        name, color, style = dialog.result_values()
+        name, color, accent_color, style = dialog.result_values()
         label = name or f"Page {highlight['page_number'] + 1}"
         self.db.update_highlight_label(highlight_id, label)
         self.db.update_highlight_color(highlight_id, color.name())
+        self.db.update_highlight_accent_color(highlight_id, accent_color.name())
         self.db.update_highlight_style(highlight_id, style)
+        self._remember_last_highlight_colors(color, accent_color)
         self._load_saved_highlights_for_current_view()
         self.refresh_highlights()
 
@@ -1815,6 +1878,38 @@ class ReaderWindow(QMainWindow):
     def jump_to_highlight(self, item):
         self.current_page = item.data(Qt.UserRole + 1)
         self.render_page()
+
+    def jump_to_next_highlight(self):
+        """Jumps to the first highlight on a page after the current one,
+        wrapping around to the very first highlight in the book if the
+        current page is at or past the last one that has any."""
+        highlights = self.db.get_highlights(self.book_id)  # already ordered by page, then id
+        if not highlights:
+            return
+        for h in highlights:
+            if h["page_number"] > self.current_page:
+                self._jump_to_highlight_entry(h)
+                return
+        self._jump_to_highlight_entry(highlights[0])
+
+    def jump_to_prev_highlight(self):
+        """Same idea in reverse -- the last highlight on a page before the
+        current one, wrapping around to the very last highlight if
+        already at or before the first page that has any."""
+        highlights = self.db.get_highlights(self.book_id)
+        if not highlights:
+            return
+        for h in reversed(highlights):
+            if h["page_number"] < self.current_page:
+                self._jump_to_highlight_entry(h)
+                return
+        self._jump_to_highlight_entry(highlights[-1])
+
+    def _jump_to_highlight_entry(self, highlight):
+        self.jump_to_page(highlight["page_number"] + 1)
+        label = highlight["label"] or f"Page {highlight['page_number'] + 1}"
+        self.copy_feedback_label.setText(f"Highlight: {label}")
+        QTimer.singleShot(2500, lambda: self.copy_feedback_label.setText(""))
 
     def _show_highlight_list_menu(self, pos):
         item = self.highlight_list.itemAt(pos)

@@ -39,6 +39,8 @@ CATALOG = {
     "reader.toggle_two_page": ("Toggle Two-Page View", "", "reader"),
     "reader.close_window": ("Close Reader Window", "Ctrl+W", "reader"),
     "reader.toggle_focus_mode": ("Toggle Focus Mode (Hide All Menus)", "F11", "reader"),
+    "reader.next_highlight": ("Jump to Next Highlight", "Ctrl+]", "reader"),
+    "reader.prev_highlight": ("Jump to Previous Highlight", "Ctrl+[", "reader"),
 }
 
 
