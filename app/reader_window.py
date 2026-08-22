@@ -5,7 +5,7 @@ import os
 
 import pymupdf as fitz  # PyMuPDF (module renamed from "fitz")
 from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from .database import Database
 from .highlights_notes import build_highlights_notes
 from .search_dialog import TextSearchDialog
+from .shortcuts import effective_shortcut, load_overrides
 from .text_selection import (
     char_index_at_point,
     chars_from_rawdict,
@@ -513,9 +514,9 @@ class ReaderWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         prev_action = QAction("\u25c0 Prev", self)
-        prev_action.setShortcut(QKeySequence(Qt.Key_Left))
         prev_action.triggered.connect(self.prev_page)
         toolbar.addAction(prev_action)
+        self.prev_action = prev_action
 
         self.page_spin = QSpinBox()
         self.page_spin.setMinimum(1)
@@ -528,23 +529,23 @@ class ReaderWindow(QMainWindow):
         toolbar.addWidget(QLabel(f" / {self.page_count}   "))
 
         next_action = QAction("Next \u25b6", self)
-        next_action.setShortcut(QKeySequence(Qt.Key_Right))
         next_action.triggered.connect(self.next_page)
         toolbar.addAction(next_action)
+        self.next_action = next_action
 
         toolbar.addSeparator()
 
         dec_action = QAction("A-", self)
-        dec_action.setShortcut(QKeySequence("Ctrl+-"))
         dec_action.setToolTip("Decrease text size / zoom out")
         dec_action.triggered.connect(self.decrease_text_size)
         toolbar.addAction(dec_action)
+        self.dec_action = dec_action
 
         inc_action = QAction("A+", self)
-        inc_action.setShortcut(QKeySequence("Ctrl+="))
         inc_action.setToolTip("Increase text size / zoom in")
         inc_action.triggered.connect(self.increase_text_size)
         toolbar.addAction(inc_action)
+        self.inc_action = inc_action
 
         self.fit_btn = QPushButton("Fit to Screen")
         self.fit_btn.setToolTip(
@@ -623,9 +624,9 @@ class ReaderWindow(QMainWindow):
         toolbar.addWidget(self.finished_btn)
 
         bookmark_action = QAction("+ Bookmark", self)
-        bookmark_action.setShortcut(QKeySequence("Ctrl+D"))
         bookmark_action.triggered.connect(self.add_bookmark)
         toolbar.addAction(bookmark_action)
+        self.bookmark_action = bookmark_action
 
         self.bookmarks_btn = QPushButton("Bookmarks/Highlights")
         self.bookmarks_btn.setToolTip("Show or hide the bookmarks and highlights panel")
@@ -666,6 +667,44 @@ class ReaderWindow(QMainWindow):
         self.scroll_area.viewport().installEventFilter(self)
         self.text_browser.viewport().installEventFilter(self)
         self.page_label.installEventFilter(self)
+
+        # A few actions are keyboard-only -- no toolbar button of their own,
+        # but still customizable like everything else in the catalog.
+        self.toggle_select_text_shortcut = QShortcut(QKeySequence(), self)
+        self.toggle_select_text_shortcut.activated.connect(self.select_text_btn.click)
+        self.toggle_simple_text_shortcut = QShortcut(QKeySequence(), self)
+        self.toggle_simple_text_shortcut.activated.connect(self.simple_btn.click)
+        self.toggle_two_page_shortcut = QShortcut(QKeySequence(), self)
+        self.toggle_two_page_shortcut.activated.connect(self.two_page_btn.click)
+        self.close_window_shortcut = QShortcut(QKeySequence(), self)
+        self.close_window_shortcut.activated.connect(self.close)
+
+        self.apply_shortcuts()
+
+    def apply_shortcuts(self):
+        """(Re-)applies every customizable action's current effective
+        shortcut -- called once at startup, and again whenever the
+        library window's Keyboard Shortcuts dialog saves a change, so
+        this window (if already open) picks up the new bindings
+        immediately rather than needing to be closed and reopened."""
+        overrides = load_overrides(self.db)
+        bindings = (
+            (self.prev_action, "reader.prev_page"),
+            (self.next_action, "reader.next_page"),
+            (self.inc_action, "reader.zoom_in"),
+            (self.dec_action, "reader.zoom_out"),
+            (self.bookmark_action, "reader.add_bookmark"),
+            (self.toggle_select_text_shortcut, "reader.toggle_select_text"),
+            (self.toggle_simple_text_shortcut, "reader.toggle_simple_text"),
+            (self.toggle_two_page_shortcut, "reader.toggle_two_page"),
+            (self.close_window_shortcut, "reader.close_window"),
+        )
+        for target, action_id in bindings:
+            seq = QKeySequence(effective_shortcut(action_id, overrides))
+            if isinstance(target, QShortcut):
+                target.setKey(seq)
+            else:
+                target.setShortcut(seq)
 
     def _build_bookmarks_dock(self):
         dock = QDockWidget("Bookmarks/Highlights", self)
@@ -895,14 +934,18 @@ class ReaderWindow(QMainWindow):
 
     # ------------- Navigation -------------
     def keyPressEvent(self, event):
-        # Belt-and-suspenders alongside the Prev/Next QAction shortcuts: guarantees
-        # Left/Right always turn pages even if some focused child widget would
-        # otherwise swallow the key first. Up/Down are intentionally left alone.
-        if event.key() == Qt.Key_Left:
+        # Belt-and-suspenders alongside the Prev/Next QAction shortcuts:
+        # guarantees page-turning always works even if some focused child
+        # widget would otherwise swallow the key first -- checked against
+        # the CURRENT (possibly user-customized) shortcut, not a hardcoded
+        # Left/Right, so a remapped key isn't silently shadowed by the old
+        # default still working here underneath it.
+        seq = QKeySequence(event.keyCombination())
+        if not seq.isEmpty() and seq == self.prev_action.shortcut():
             self.prev_page()
             event.accept()
             return
-        if event.key() == Qt.Key_Right:
+        if not seq.isEmpty() and seq == self.next_action.shortcut():
             self.next_page()
             event.accept()
             return

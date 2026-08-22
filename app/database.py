@@ -3,7 +3,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def _split_multi_value(raw_value):
@@ -77,6 +77,15 @@ class Database:
                 style TEXT DEFAULT 'fill',
                 created_date TEXT NOT NULL,
                 FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS trash (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                original_filepath TEXT NOT NULL,
+                trash_filepath TEXT NOT NULL,
+                book_data TEXT NOT NULL,
+                related_data TEXT NOT NULL,
+                deleted_date TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -231,6 +240,124 @@ class Database:
     def remove_book(self, book_id):
         self.conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
         self.conn.commit()
+
+    # ---------------- Trash (undo for deletion) ----------------
+    def capture_book_snapshot(self, book_id):
+        """A complete, read-only snapshot of everything needed to fully
+        restore a book later: its own row, all its bookmarks, all its
+        highlights, and the NAMES (not ids) of its categories -- names
+        are used since a category could itself be deleted or recreated
+        between now and a future restore, and matching by name lets
+        restoration recreate it if that happens. Returns None if the
+        book doesn't exist."""
+        book = self.get_book(book_id)
+        if not book:
+            return None
+        return {
+            "book_row": dict(book),
+            "bookmarks": [dict(bm) for bm in self.get_bookmarks(book_id)],
+            "highlights": self.get_highlights(book_id),
+            "category_names": [c["name"] for c in self.get_categories_for_book(book_id)],
+        }
+
+    def add_trash_entry(self, title, original_filepath, trash_filepath, snapshot):
+        now = datetime.now().isoformat()
+        related_data = json.dumps({
+            "bookmarks": snapshot["bookmarks"],
+            "highlights": snapshot["highlights"],
+            "category_names": snapshot["category_names"],
+        })
+        cur = self.conn.execute(
+            "INSERT INTO trash (title, original_filepath, trash_filepath, book_data, related_data, deleted_date) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (title, original_filepath, trash_filepath, json.dumps(snapshot["book_row"]), related_data, now),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def _row_to_trash_dict(self, row):
+        d = dict(row)
+        d["book_data"] = json.loads(d["book_data"])
+        d["related_data"] = json.loads(d["related_data"])
+        return d
+
+    def get_trash_entries(self):
+        cur = self.conn.execute("SELECT * FROM trash ORDER BY deleted_date DESC")
+        return [self._row_to_trash_dict(r) for r in cur.fetchall()]
+
+    def get_trash_entry(self, trash_id):
+        cur = self.conn.execute("SELECT * FROM trash WHERE id = ?", (trash_id,))
+        row = cur.fetchone()
+        return self._row_to_trash_dict(row) if row else None
+
+    def delete_trash_entry(self, trash_id):
+        """Removes just the database record -- the caller is responsible
+        for deleting the actual trashed file first, since this module
+        never touches the filesystem itself."""
+        self.conn.execute("DELETE FROM trash WHERE id = ?", (trash_id,))
+        self.conn.commit()
+
+    def get_expired_trash_entries(self, max_age_days=30):
+        """Entries older than max_age_days, for the caller to actually
+        purge (delete their files, then this record) -- listed rather
+        than deleted here directly, for the same filesystem-boundary
+        reason as delete_trash_entry."""
+        cutoff = datetime.now() - timedelta(days=max_age_days)
+        return [e for e in self.get_trash_entries() if datetime.fromisoformat(e["deleted_date"]) < cutoff]
+
+    def restore_book_from_trash(self, trash_id, restored_filepath):
+        """Fully reconstructs a trashed book: a new books row (a fresh id,
+        every other field copied from the snapshot taken at delete time,
+        pointed at restored_filepath), its bookmarks and highlights
+        re-inserted against that new id, and its categories re-associated
+        by name -- recreating any category that no longer exists. Removes
+        the trash entry once restoration succeeds. Returns the new
+        book_id, or None if the trash entry doesn't exist.
+
+        Builds the INSERT dynamically from whatever columns the snapshot
+        actually has, rather than a hardcoded list -- so this doesn't need
+        updating every time the books table gains a new column."""
+        entry = self.get_trash_entry(trash_id)
+        if entry is None:
+            return None
+
+        book_row = dict(entry["book_data"])
+        book_row.pop("id", None)
+        book_row["filepath"] = restored_filepath
+        columns = list(book_row.keys())
+        cur = self.conn.execute(
+            f"INSERT INTO books ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+            [book_row[c] for c in columns],
+        )
+        new_book_id = cur.lastrowid
+
+        for bm in entry["related_data"]["bookmarks"]:
+            self.conn.execute(
+                "INSERT INTO bookmarks (book_id, page_number, label, created_date) VALUES (?, ?, ?, ?)",
+                (new_book_id, bm["page_number"], bm["label"], bm["created_date"]),
+            )
+
+        for h in entry["related_data"]["highlights"]:
+            self.conn.execute(
+                "INSERT INTO highlights (book_id, page_number, label, color, text, rects, style, created_date) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    new_book_id, h["page_number"], h["label"], h["color"], h["text"],
+                    json.dumps(h["rects"]), h.get("style") or "fill", h["created_date"],
+                ),
+            )
+
+        for name in entry["related_data"]["category_names"]:
+            category = self.create_category(name)  # idempotent: creates if missing, else just fetches
+            if category:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO book_categories (book_id, category_id) VALUES (?, ?)",
+                    (new_book_id, category["id"]),
+                )
+
+        self.conn.execute("DELETE FROM trash WHERE id = ?", (trash_id,))
+        self.conn.commit()
+        return new_book_id
 
     def toggle_favorite(self, book_id):
         self.conn.execute(

@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -55,6 +56,8 @@ from .pdf_password import PasswordUnlockDialog, strip_or_change_password
 from .presets import GENRE_PRESETS, LANGUAGE_PRESETS, merge_with_used, normalize_custom_value
 from .reader_window import ReaderWindow
 from .search_dialog import TextSearchDialog
+from .shortcuts import effective_shortcut, load_overrides, save_overrides
+from .shortcuts_dialog import ShortcutsDialog
 from .themes import DARK_THEME, LIGHT_THEME
 from .thumbnails import delete_thumbnail, ensure_thumbnail
 from .widgets import BookCard, CoverCell, human_size
@@ -153,10 +156,12 @@ class LibraryWindow(QMainWindow):
         add_action = QAction("Add Book(s)", self)
         add_action.triggered.connect(self.add_books)
         toolbar.addAction(add_action)
+        self.add_books_action = add_action
 
         add_folder_action = QAction("Add Folder", self)
         add_folder_action.triggered.connect(self.add_folder)
         toolbar.addAction(add_folder_action)
+        self.add_folder_action = add_folder_action
 
         library_folder_action = QAction("Library Folder...", self)
         library_folder_action.setToolTip(
@@ -216,15 +221,13 @@ class LibraryWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        refresh_action = QAction("Refresh", self)
-        refresh_action.setShortcut(QKeySequence("F5"))
-        refresh_action.setToolTip(
-            "Refresh the library (F5) -- re-checks for files that were renamed "
+        self.refresh_action = QAction("Refresh", self)
+        self.refresh_action.setToolTip(
+            "Refresh the library -- re-checks for files that were renamed "
             "or deleted outside the app"
         )
-        refresh_action.triggered.connect(lambda: self.refresh_library())
-        toolbar.addAction(refresh_action)
-        self.refresh_action = refresh_action
+        self.refresh_action.triggered.connect(lambda: self.refresh_library())
+        toolbar.addAction(self.refresh_action)
 
         toolbar.addSeparator()
 
@@ -264,6 +267,7 @@ class LibraryWindow(QMainWindow):
         )
         import_action.triggered.connect(self.import_file)
         toolbar.addAction(import_action)
+        self.import_action = import_action
 
         toolbar.addSeparator()
 
@@ -278,6 +282,25 @@ class LibraryWindow(QMainWindow):
         self.theme_btn.setCheckable(True)
         self.theme_btn.clicked.connect(self.toggle_theme)
         toolbar.addWidget(self.theme_btn)
+
+        # Push the settings gear all the way to the toolbar's far right edge.
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
+
+        self.shortcuts_action = QAction("\u2699", self)  # gear glyph -- no icon assets elsewhere in the app to match
+        self.shortcuts_action.setToolTip("Keyboard Shortcuts...")
+        self.shortcuts_action.triggered.connect(self.open_shortcuts_dialog)
+        toolbar.addAction(self.shortcuts_action)
+
+        # A few actions are keyboard-only -- no toolbar button of their own,
+        # but still customizable like everything else in the catalog.
+        self.toggle_select_mode_shortcut = QShortcut(QKeySequence(), self)
+        self.toggle_select_mode_shortcut.activated.connect(self.select_mode_btn.click)
+        self.focus_search_shortcut = QShortcut(QKeySequence(), self)
+        self.focus_search_shortcut.activated.connect(self._focus_search_box)
+        self.open_shortcuts_shortcut = QShortcut(QKeySequence(), self)
+        self.open_shortcuts_shortcut.activated.connect(self.open_shortcuts_dialog)
 
         # ---- Overall layout: category sidebar (left) + main content (right) ----
         central = QWidget()
@@ -466,8 +489,47 @@ class LibraryWindow(QMainWindow):
         # Ctrl+A selects every book currently shown (respecting Select mode
         # and, when paginated, only the current page -- matching how "select
         # all" works in most apps: everything visible, not the whole library).
-        self.select_all_shortcut = QShortcut(QKeySequence("Ctrl+A"), self)
+        self.select_all_shortcut = QShortcut(QKeySequence(), self)
         self.select_all_shortcut.activated.connect(self._select_all_visible)
+
+        self._apply_shortcuts()
+
+    def _focus_search_box(self):
+        self.search_box.setFocus()
+        self.search_box.selectAll()
+
+    def _apply_shortcuts(self):
+        """(Re-)applies every customizable action's current effective
+        shortcut -- called once at startup, and again after the
+        Keyboard Shortcuts dialog saves a change, so an already-running
+        window picks up the new bindings immediately rather than needing
+        a restart."""
+        overrides = load_overrides(self.db)
+        bindings = (
+            (self.add_books_action, "library.add_books"),
+            (self.add_folder_action, "library.add_folder"),
+            (self.import_action, "library.import"),
+            (self.refresh_action, "library.refresh"),
+            (self.select_all_shortcut, "library.select_all"),
+            (self.toggle_select_mode_shortcut, "library.toggle_select_mode"),
+            (self.focus_search_shortcut, "library.focus_search"),
+            (self.open_shortcuts_shortcut, "library.open_shortcuts"),
+        )
+        for target, action_id in bindings:
+            seq = QKeySequence(effective_shortcut(action_id, overrides))
+            if isinstance(target, QShortcut):
+                target.setKey(seq)
+            else:
+                target.setShortcut(seq)
+
+    def open_shortcuts_dialog(self):
+        dialog = ShortcutsDialog(self.db, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        save_overrides(self.db, dialog.result_overrides())
+        self._apply_shortcuts()
+        for win in self.reader_windows.values():
+            win.apply_shortcuts()
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
@@ -483,11 +545,15 @@ class LibraryWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event):
-        # Belt-and-suspenders alongside the Ctrl+A QShortcut: some focused
+        # Belt-and-suspenders alongside the Select All QShortcut: some focused
         # child widgets (e.g. the list/grid viewport after a click) can
         # intercept the key before a window-level shortcut ever sees it, so
-        # this guarantees Ctrl+A always works regardless of what has focus.
-        if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
+        # this guarantees Select All always works regardless of what has
+        # focus -- checked against the CURRENT (possibly user-customized)
+        # shortcut, not a hardcoded Ctrl+A, so a remapped key isn't silently
+        # shadowed by the old default still working here underneath it.
+        seq = QKeySequence(event.keyCombination())
+        if not seq.isEmpty() and seq == self.select_all_shortcut.key():
             self._select_all_visible()
             event.accept()
             return
